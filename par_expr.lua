@@ -120,6 +120,7 @@ try_reduce = function(expr)
   "=<<", "=>>", "=+", "=-", "=%", "=*", "=/"}, "rtl")
  handle_op({"?"}, "trinary")
  handle_op({"|"}, "ltr")
+ handle_op({"^"}, "ltr") -- May be Honeywell-specific
  handle_op({"&"}, "ltr")--4.8
  handle_op({"==", "!="}, "unk")
  handle_op({"<", "<=", ">", ">="}, "unk")
@@ -130,8 +131,9 @@ try_reduce = function(expr)
  -- Deal with unary operations last.
 
  -- Currently this gives the most accurate results,
- --  for cases like "*adx++"
- handle_unop({"++", "--", "!", "-", "&", "*"}, false)
+ --  for cases like "*adx++".
+ -- The '~' operator may be Honeywell-specific.
+ handle_unop({"++", "--", "~", "!", "-", "&", "*"}, false)
  handle_unop({"++", "--"}, true)
 
  if done then return done end

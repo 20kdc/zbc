@@ -17,7 +17,7 @@ local patterns = {
 
  {"[0-9]+", "int"},
 
- {"[a-zA-Z_\x80-\xFF][a-zA-Z_\x80-\xFF0-9]*", "id"},
+ {"[a-zA-Z_%.\x80-\xFF][a-zA-Z_%.\x80-\xFF0-9]*", "id"},
 
  {"%:", "colon"},
  {"%;", "semicolon"},
@@ -65,12 +65,14 @@ local patterns = {
  {"%/", "op"},
 
  {"%|", "op"},
+ {"%^", "op"}, -- honeywell, XOR
  {"%&", "op"},
 
  {"%?", "op"},
 
  -- unary ops which do NOT double as binary ops
  {"%!", "op"},
+ {"%~", "op"}, -- honeywell, NOT
 
  {"%=", "op"},
  {"%<", "op"},

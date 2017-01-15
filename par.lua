@@ -123,6 +123,7 @@ local function par_rvalue_inner(tokens)
  return tokens, built
 end
 local function par_rvalue(tokens)
+ local line = tokens[1][3]
  local rtk, built = par_rvalue_inner(tokens)
  -- What comes out goes straight to compiler-land.
  
@@ -131,7 +132,7 @@ local function par_rvalue(tokens)
  --local r, re = true, par_expr(built)
  
  if r then return rtk, re end
- error("Expression error @ line " .. built[1][3] .. ":" .. re)
+ error("Expression error @ line " .. line .. ":" .. re)
 end
 
 local function park_rvalue(tokens)
@@ -260,10 +261,11 @@ local function par_stmt_inner(tokens)
   end
   if tokens[1][2] == "case" then
    local cl = tokens[1][3]
-   local tokens, ex = par_rvalue(tokens:sub(2))
-   if not tokens[1] then error("Unexpected EOF in case @ line " .. cl) end
-   if tokens[1][1] ~= "colon" then error("Case missing colon @ line " .. cl) end
-   local rt, rs = par_stmt(tokens:sub(2))
+   local bound = tokens:findAVP("colon")
+   if not bound then error("Couldn't find colon in case @ line " .. cl) end
+   local ex = park_rvalue(tokens:sub(2, bound - 1))
+   tokens = tokens:sub(bound + 1)
+   local rt, rs = par_stmt(tokens)
    return rt, {"case", ex, rs, cl}
   end
  end

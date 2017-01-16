@@ -129,38 +129,7 @@ local ast = par(tokens)
 -- There is also:
 -- : : Comment. Read in another object to take it's place.
 
-local dump_mshl = nil
-dump_mshl = function (obj, f, indent)
- local tp = type(obj)
- if obj == nil then
-  f:write(indent .. "}\n")
-  return
- end
- if tp == "table" then
-  f:write(indent .. "{\n")
-  for k, v in ipairs(obj) do
-   dump_mshl(v, f, indent .. " ")
-  end
-  f:write(indent .. "}\n")
-  return
- end
- if tp == "number" then
-  f:write(indent .. "%" .. obj .. "\n")
-  return
- end
- if tp == "string" then
-  f:write(indent .. "$" .. obj:len() .. "\t")
-  f:write(obj .. "\n")
-  return
- end
- if tp == "boolean" then
-  local r = "N"
-  if obj then r = "Y" end
-  f:write(indent .. r .. "\n")
-  return
- end
- error("Cannot handle object type " .. tp)
-end
+local astlib = require("ast")
 -- give enough information in the file that someone can decode the format
 --  properly, without shipping an entire specification in every AST.
 io.stdout:write(": ZBC AST\n")
@@ -168,4 +137,4 @@ io.stdout:write(": This is a binary file - treat it as such.\n")
 io.stdout:write(": (Don't worry, using standard string trim is fine,\n")
 io.stdout:write(":  between the type-character and the linebreak -\n")
 io.stdout:write(":  both \\n and \\t define a linebreak here.)\n")
-dump_mshl(ast, io.stdout, "")
+astlib.dump_mshl(ast, io.stdout, "")

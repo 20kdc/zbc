@@ -19,13 +19,33 @@
 -- rvalue, <rvalue>, <line>
 -- if/while/switch, <rvalue>, <stmt>, <line>
 -- if_else, <rvalue>, <stmt>, <stmt-else>, <line>
--- auto, {{<name>[, <rvalue>]},...}, <line>
+
+-- auto, {{"var/vec", <name>[, <rvalue>]},...}, <line>
+-- if it's "var", then the <rvalue> is the ival
+-- if it's "vec", then the <rvalue> is the size (Honeywell B)
+
 -- extrn, {<name>, ...}, <line>
 -- label, <name>, <stmt>, <line>
 -- case, <rvalue>, <stmt>, <line>
+
+-- break, <line>
+-- Note that this can break out of while, and switch.
+-- Honeywell B extension.
+
 -- goto, <rvalue>, <line>
+-- There is absolutely no guarantees in the specification of labels
+--  outside the current function being available.
+-- However, goto does, BNF-wise, in the documentation on PDP-11 B, take an rvalue.
+-- The absolutely certain solution is to flush any
+--  behind-the-scenes stack management work at labels,
+--  or make your compiler not entirely compliant and error on non-ID gotos.
+
 -- return_void, <line>
 -- return, <rvalue>, <line>
+-- compound, {<statement>, ...}
+
+-- If your compiler implements the full Honeywell B set rather than the PDP-11 B set,
+--  then you have to handle default: as a special case of label.
 
 -- AST decls
 -- function
@@ -186,6 +206,8 @@ local function park_stmt_contents(tokens, line)
   end
   if tokens[1][2] == "auto" then
    -- A bit more forgiving ("auto;" will do nothing, rvalues can be used)
+   -- Notably, Honeywell B supports vector autos.
+   -- Which leads into the problem of implementation.
    tokens = tokens:sub(2)
    local res = {}
    while #tokens > 0 do
@@ -194,6 +216,7 @@ local function park_stmt_contents(tokens, line)
     end
     local id = tokens[1][2]
     local c = nil
+    local tp = "var"
     if tokens[2] then
      c = nil
      if tokens[2][1] == "comma" then
@@ -204,12 +227,22 @@ local function park_stmt_contents(tokens, line)
        if tokens[1][1] ~= "comma" then
         error("Nonsense after auto ival @ line " .. tokens[1][3])
        end
+       tokens = tokens:sub(2)
+      end
+      -- Is this a vector? (Honeywell B)
+      if c[1] == "arglist[" then
+       tp = "vec"
+       c = c[2]
+       if #c ~= 1 then
+        error("bad vector auto definition @ line " .. line)
+       end
+       c = c[1]
       end
      end
     else
      tokens = tokens:sub(2)
     end
-    table.insert(res, {id, c})
+    table.insert(res, {tp, id, c})
    end
    return {"auto", res, line}
   end
@@ -222,9 +255,16 @@ local function park_stmt_contents(tokens, line)
   end
   if tokens[1][2] == "goto" then
    if #tokens == 1 then
-    error("GOTO @ line " .. tokens[1][3] .. " must have target!")
+    error("GOTO @ line " .. line .. " must have target!")
    else
     return {"goto", park_rvalue(tokens:sub(2)), line}
+   end
+  end
+  if tokens[1][2] == "break" then
+   if #tokens ~= 1 then
+    error("break @ line " .. line .. " can't have any parameters.")
+   else
+    return {"break", line}
    end
   end
  end
@@ -299,11 +339,12 @@ par_stmt = function (tokens)
  if firstTP == "lb" then
   -- bunch of tokens
   local group = {}
+  local line = tokens[1][3]
   tokens = tokens:sub(2)
   while true do
    if not tokens[1] then error("Hit EOF when going through function body.") end
    if tokens[1][1] == "rb" then
-    return tokens:sub(2), group
+    return tokens:sub(2), {"compound", group, line}
    end
    local ntokens, stmt = par_stmt(tokens)
    tokens = ntokens
@@ -318,14 +359,23 @@ local function park_decl_inner(tokens, name, line)
  if tokens[1] then
   if tokens[1][1] == "ls" then
    local line = tokens[1][3]
-   tokens, vect = par_rvalue(tokens)
-   if vect[1] ~= "arglist[" then
-    error("Nonsense after vector size @ line " .. tokensp)
+   if tokens[2] then
+    if tokens[2][1] == "rs" then
+     -- Special exception, fake a [0]
+     vect = {"int", "0", line}
+     tokens = tokens:sub(3)
+    end
    end
-   if #vect[2] ~= 1 then
-    error("Invalid vector size @ line " .. tokensp)
+   if not vect then
+    tokens, vect = par_rvalue(tokens)
+    if vect[1] ~= "arglist[" then
+     error("Nonsense after vector size @ line " .. tokensp)
+    end
+    if #vect[2] ~= 1 then
+     error("Invalid vector size @ line " .. tokensp)
+    end
+    vect = vect[2][1]
    end
-   vect = vect[2][1]
   end
  end
  -- remaining tokens are ivals

@@ -1,4 +1,6 @@
 test.b
 test.ast
+test-st2.ast
 test.dot
 test.svg
+cnstdiff.diff

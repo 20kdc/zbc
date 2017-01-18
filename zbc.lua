@@ -3,9 +3,7 @@
 
 -- ZBC. A B compiler for the modern world. (Maybe.)
 
-local f = io.open("test.b", "r")
-local s = f:read("*a")
-f:close()
+local s = io.stdin:read("*a")
 
 local lex = require("lex")
 -- All the tokens go in here.

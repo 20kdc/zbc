@@ -10,6 +10,28 @@
 --  implementation of precedence rules.
 -- Hopefully that will lead to a correct implementation.
 
+-- Possible outputs:
+--  Base tokens (provided by lex.lua):
+--   string, char, int, id
+--  Parsed operations (type, some amount of expressions, then a line):
+--   puop, <op-str>, <rvalue>, <op-right-of-rvalue-boolean>, <line>
+--   pbop, <op-str>, <rvalue>, <rvalue>, <line>
+--   ptop, <op-str>, <rvalue>, <rvalue>, <rvalue>, <line>
+--  Other parsed outputs
+--   arglist(, {<rvalue>, ...}, <line>
+--    ^ Verify this only contains one element
+--   arglist[, {<rvalue>, ...}, <line>
+--    ^ Usually invalid
+--   call/index, <rvalue>, {<rvalue>, ...}, <line>
+--    ^ If "index", ensure arguments only has one element
+
+-- If "op" is somehow encountered,
+--  then an operation was used without triggering precedence rules.
+-- This is almost certainly due to a combination of user error in
+--  using an operation without any other tokens
+-- (other tokens would trigger the 'failed to reduce' error),
+-- and in this file for not supporting the operation in question.
+
 local function subset(t, f, l)
  local r = {}
  for i = f, l do

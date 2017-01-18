@@ -10,16 +10,40 @@ local astlib = require("ast")
 local ast = astlib.read_mshl(io.stdin)
 
 local defines = {}
+local condensechars = false
+local bigendian = false
 local args = {...}
 local p = 1
+
 while p < #args do
- defines[args[p]] = astlib.parse_int(args[p + 1])
- p = p + 2
+ local arg = args[p]
+ if arg:sub(1, 2) == "-D" then
+  defines[arg:sub(2)] = astlib.parse_int(args[p + 1])
+  p = p + 2
+ else
+  if arg:sub(1, 2) == "-C" then
+   condensechars = true
+   p = p + 1
+  else
+   if arg:sub(1, 2) == "-B" then
+    bigendian = true
+    p = p + 1
+   else
+    error("argument unknown: " .. arg)
+   end
+  end
+ end
 end
 
 -- Handle one particular rvalue's calculation if possible.
 -- This only has to cover the things the constant evaluator performs.
 local function try_calc(rv)
+ if rv[1] == "char" then
+  local r = astlib.parse_str(rv[2], astlib.default_escapes, rv[3])
+  r = astlib.parse_chars(r, rv[3], bigendian, true)
+  if #r > 1 then error("Character constant does not fit in char @ line " .. rv[3]) end
+  return r[1]
+ end
  if rv[1] == "int" then
   return astlib.parse_int(rv[2])
  end
@@ -35,13 +59,15 @@ local function try_calc(rv)
   return try_calc(rv[2][1])
  end
  if rv[1] == "puop" then
-  local n = try_calc(rv[3])
-  if n then
-   if rv[2] == "-" then
-    return -n
-   end
-   if rv[2] == "~" then
-    return -(n + 1)
+  if not rv[4] then
+   local n = try_calc(rv[3])
+   if n then
+    if rv[2] == "-" then
+     return -n
+    end
+    if rv[2] == "~" then
+     return -(n + 1)
+    end
    end
   end
  end

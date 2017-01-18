@@ -1,6 +1,9 @@
 test.b
-test.ast
-test-st2.ast
-test.dot
-test.svg
-cnstdiff.diff
+
+# test script results
+
+temp/test.ast
+temp/test-st2.ast
+temp/test.dot
+temp/test.svg
+temp/cnstdiff.diff

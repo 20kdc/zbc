@@ -20,9 +20,9 @@
 -- if/while/switch, <rvalue>, <stmt>, <line>
 -- if_else, <rvalue>, <stmt>, <stmt-else>, <line>
 
--- auto, {{"var/vec", <name>[, <rvalue>]},...}, <line>
--- if it's "var", then the <rvalue> is the ival
--- if it's "vec", then the <rvalue> is the size (Honeywell B)
+-- auto, {{<name>[, <rvalue-vecsize>]},...}, <line>
+-- note that if the rvalue is present, this is a vector allocation.
+-- Both PDP-11 and Honeywell syntaxes are supported.
 
 -- extrn, {<name>, ...}, <line>
 -- label, <name>, <stmt>, <line>
@@ -42,15 +42,18 @@
 
 -- return_void, <line>
 -- return, <rvalue>, <line>
+-- Note that this accepts any rvalue, even though spec says () is required.
+-- This should not make a difference for any valid B program.
+
 -- compound, {<statement>, ...}
 
 -- If your compiler implements the full Honeywell B set rather than the PDP-11 B set,
 --  then you have to handle default: as a special case of label.
 
 -- AST decls
--- function
--- vardef, <name>, {<ival>,...}
--- vecdef, <name>, <vsz>, {<ival>,...}
+-- function, <name>, {<argid>,...}, <stmt>, <line>
+-- vardef, <name>, {<ival>,...}, <line>
+-- vecdef, <name>, <vsz>, {<ival>,...}, <line>
 
 -- "par_" functions return the remaining tokens, and the output.
 -- These are for cases where the length is unknown.
@@ -216,7 +219,6 @@ local function park_stmt_contents(tokens, line)
     end
     local id = tokens[1][2]
     local c = nil
-    local tp = "var"
     if tokens[2] then
      c = nil
      if tokens[2][1] == "comma" then
@@ -229,9 +231,8 @@ local function park_stmt_contents(tokens, line)
        end
        tokens = tokens:sub(2)
       end
-      -- Is this a vector? (Honeywell B)
+      -- Is this Honeywell B syntax?
       if c[1] == "arglist[" then
-       tp = "vec"
        c = c[2]
        if #c ~= 1 then
         error("bad vector auto definition @ line " .. line)
@@ -242,7 +243,7 @@ local function park_stmt_contents(tokens, line)
     else
      tokens = tokens:sub(2)
     end
-    table.insert(res, {tp, id, c})
+    table.insert(res, {id, c})
    end
    return {"auto", res, line}
   end
@@ -280,12 +281,14 @@ local function par_stmt_inner(tokens)
  local conditional = false
  local canhaveelse = false
  if tokens[1][1] == "id" then
+  -- This should be first, for lack of any better ideas.
   if tokens[2] then
    if tokens[2][1] == "colon" then
     local rt, rs = par_stmt(tokens:sub(3))
     return rt, {"label", tokens[1][2], rs}
    end
   end
+
   if tokens[1][2] == "if" then
    conditional = true
    canhaveelse = true
@@ -398,9 +401,16 @@ local function par_declaration(tokens)
   f = tokens:find("rp")
   if not f then error("Could not find end of function arglist @ line " .. idl) end
   local args = park_arglist(tokens:sub(1, f - 1))
+  local argsr = {}
+  for k, v in ipairs(args) do
+   if v[1] ~= "id" then
+    error("args should only contain IDs @ line " .. v[#v])
+   end
+   argsr[k] = v[2]
+  end
   tokens = tokens:sub(f + 1)
   local tokens, stmt = par_stmt(tokens)
-  return tokens, {"function", id, args, stmt, idl}
+  return tokens, {"function", id, argsr, stmt, idl}
  else
   -- Declaration ending in semicolon
   local es = tokens:find("semicolon")

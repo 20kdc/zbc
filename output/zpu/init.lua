@@ -18,6 +18,8 @@ local ast = astlib.read_mshl(io.stdin)
 -- By specification, this should be \x04
 local string_terminator = "\x00"
 
+local annotate_fc = false
+
 local uniqueid = 0
 local function get_unique_label()
  local p = uniqueid
@@ -34,17 +36,21 @@ end
 local global_variables = {}
 -- this is used later
 local global_externs = {}
+local global_local_externs = {}
 local global_flist = {}
 for k, v in ipairs(ast) do
  if v[1] == "vardef" then
   print(".globl " .. v[2])
   global_variables[v[2]] = true
+  global_local_externs[v[2]] = true
  end
  if v[1] == "vecdef" then
   print(".globl " .. v[2])
+  global_local_externs[v[2]] = true
  end
  if v[1] == "function" then
   print(".globl " .. v[2])
+  global_local_externs[v[2]] = true
  end
 end
 
@@ -97,7 +103,7 @@ end
 local function stack_flush(pstk, tstk, chkp, fake)
  local chks = (#tstk - #chkp)
  -- tstk 2, chkp 1, result is 1, so indexes > 1 are in checkpoint.
- if not fake then
+ if (not fake) and annotate_fc then
   io.write("// " .. chks .. ";")
   for _, v in ipairs(tstk) do
    local ls = "<T>"
@@ -119,19 +125,28 @@ local function stack_flush(pstk, tstk, chkp, fake)
    local pv, ofs, st = find_on_stack(pstk, chkp, v)
    ofs = ofs + (4 * (#tstk - #chkp))
    local dofs = math.floor(ofs / 4) + 1
-   if heavyduty then
-    if not fake then print("LOADSP " .. (4 * (i - 1))) end
-    ofs = ofs + 4
-   end
-   if not fake then print("STORESP " .. ofs) end
-   if pv then
-    -- No longer stale.
-    pstk[v][2] = false
+   -- if it's already fine on this stack, don't bother
+   if tstk[dofs] ~= v then
+    if heavyduty then
+     if not fake then print("LOADSP " .. (4 * (i - 1))) end
+     ofs = ofs + 4
+    end
+    if not fake then print("STORESP " .. ofs) end
+    if pv then
+     -- No longer stale.
+     pstk[v][2] = false
+    else
+     if chks[dofs - chks] ~= v then error("consistency failure") end
+     tstk[dofs] = v
+    end
    else
-    if chks[dofs - chks] ~= v then error("consistency failure") end
-    tstk[dofs] = v
+    -- can be discarded
+    if not heavyduty then
+     if not fake then print("STORESP 0") end
+    end
    end
   else
+   -- can be discarded
    if not heavyduty then
     if not fake then print("STORESP 0") end
    end
@@ -165,6 +180,20 @@ end
 --    IM: May as well be RAW, "IM <arg>" if not for the automatic NOP insertion.
 --    AGET: Pull an automatic.
 --          This may or may not alter stack.
+--          Some instructions are "flow breakers",
+--           and if a ASET is not found before one,
+--           then some optimizations cannot safely be performed.
+--          (Note that another "AGET" *can* be a flow breaker under certain conditions.)
+--          Should the compiler fail with the message "Auto <name> has been lost.",
+--           this is one of the things which may be critical to fixing the issue.
+--          The instructions marked as "flow breakers" are:
+local aget_flow_breakers = {}
+aget_flow_breakers["BRKC"] = true
+aget_flow_breakers["FSTK"] = true
+aget_flow_breakers["STCK"] = true
+aget_flow_breakers["SBCK"] = true
+-- RSTK is safe because the stack will be reassembled with the AGET in mind.
+
 --    APTR: Pull the address of an automatic from pstk.
 --          The automatic SHOULD be set as a direct automatic.
 --    DTMP: Define a useless temporary.
@@ -183,11 +212,11 @@ end
 --    RETV: Write return-void code.
 --    STCK: Set temporary stack checkpoint.
 --    SBCK: Set temporary stack checkpoint, also setting the previous checkpoint as the 'break target checkpoint'
+--    BRKC: Write code to return to the break target checkpoint without affecting the working model of the stack.
+--          Used for break.
 --    ETCK: Write code to return to stack checkpoint,
 --           and exit the stack checkpoint.
 --    TTCK: ETCK, but without writing code.
---    BRKC: Write code to return to the break target checkpoint without affecting the working model of the stack.
---          Used for break.
 --    RAW: Raw ZPU assembly.
 --    AUTO: Assign pstk variable. (stale)
 --    ARG: Assign pstk variable. (not stale)
@@ -197,6 +226,7 @@ end
 --    IST+: Increase the Instant number by 1.
 --          This number is used as a hint in order to avoid stack wastage that would lower performance.
 --    IST-: Decrease the Instant number by 1, unless it's 0, in which case error.
+
 -- The general point of this is that if stack accesses are well-timed,
 --  a situation like:
 --   auto a;
@@ -211,20 +241,33 @@ end
 --  will result in more efficient code overall.
 
 -- Example notes;
+-- Note that all conditionals have stack checkpointing immediately after the the branch.
+-- This serves two purposes:
+-- 1. Alerting any optimization code that something important is about to happen,
+--     and it shouldn't try anything clever crossing one of these boundaries,
+--     since it could generate invalid code that way
+-- 2. Cleaning up after whatever happens in the conditional so code flow makes sense.
+-- Note that there is also a legitimate reason for stack checkpoints to, by themselves, be "important":
+--  it is expected that anything done to the core stack within a stack checkpoint will be reverted.
 -- 'if':
--- RAW IMPCREL .L.1
+-- <condition code>
+-- DPOP
+-- IMPCREL .L.1
 -- RAW EQBRANCH
 -- STCK
 --  <run code>
 -- ETCK
 -- RAW .L.1:
+
 -- 'if/else':
--- RAW IMPCREL .L.1
+-- <condition code>
+-- DPOP
+-- IMPCREL .L.1
 -- RAW EQBRANCH
 -- STCK
 --  <run code 2>
 -- ETCK
--- RAW IM .L.2
+-- IMPCREL .L.2
 -- RAW POPPCREL
 -- RAW .L.1:
 -- STCK
@@ -234,28 +277,33 @@ end
 
 -- 'while':
 -- RAW .L.1:
--- RAW IMPCREL .L.2
--- RAW EQBRANCH
 -- SBCK
+-- <condition code>
+-- DPOP
+-- IMPCREL .L.2
+-- RAW EQBRANCH
 --  <run code>
 -- ETCK
--- RAW IMPCREL .L.1
+-- IMPCREL .L.1
 -- RAW POPPCREL
 -- RAW .L.2:
 
 -- 'break':
 -- BRKC
--- RAW IMPCREL .L.2
+-- IMPCREL .L.2
 -- RAW POPPCREL
 
--- 'label':
--- RAW IMPCREL .L.1
+-- 'label': (note that the stack checkpoint causes a duplicate-clean to make RSTK faster)
+-- STCK
+-- IMPCREL .L.1
 -- RAW .LAB.labelid:
 -- RSTK
 -- RAW .L.1:
+-- ETCK
 
--- 'goto':
+-- 'goto' (known label ID):
 -- FSTK
+-- IMPCREL <label>
 -- RAW POPPCREL
 
 -- "lockautos" is used for cases where pointers to an auto are used.
@@ -267,9 +315,21 @@ local function handle_fc(fc, autocount, lockautos)
  local breaking = nil
  local lastwasim = false
  local instant = 0
+ local lastraw = false
  local function dpop()
   if not tstk[1] then error("internal dpop underflow") end
   table.remove(tstk, 1)
+ end
+ local function clean_duplicates()
+  local seen = {}
+  for k, v in ipairs(tstk) do
+  if v ~= "" then
+    if seen[v] then
+     tstk[k] = ""
+    end
+    seen[v] = true
+   end
+  end
  end
  local function handle_sc(k, v)
   if v[1] == "IM" then
@@ -278,14 +338,29 @@ local function handle_fc(fc, autocount, lockautos)
    end
    print("IM " .. v[2])
    lastwasim = true
+   lastraw = false
+   return
+  end
+  if v[1] == "IMPCREL" then
+   if lastwasim then
+    print("NOP")
+   end
+   print("IMPCREL " .. v[2])
+   lastwasim = true
+   lastraw = false
    return
   end
   lastwasim = false
   if v[1] == "RAW" then
+   if (not lastraw) and annotate_fc then
+    print("// RAW:")
+   end
    print(v[2])
+   lastraw = true
    return
   end
-  print("// " .. (#tstk) .. " " .. v[1])
+  lastraw = false
+  if annotate_fc then print("// " .. (#tstk) .. " " .. v[1]) end
   if v[1] == "ARG" then
    pstk[v[2]] = {v[3], false}
    return
@@ -295,6 +370,27 @@ local function handle_fc(fc, autocount, lockautos)
    return
   end
   if v[1] == "STCK" then
+   -- Before beginning, make "duplicate" tstk auto copies useless.
+   -- This is because only the first copy will be restored by the stack flusher if required.
+   -- ex.
+   -- ASET test
+   -- loop{
+   -- STCK
+   -- AGET test
+   -- ETCK
+   -- }
+   -- would cause a not-entirely-required restore of the original test?
+   -- ...no, because the AGET would presumably get dealt with by whatever's using it
+   -- unless the AGET managed to somehow enter another checkpoint boundary,
+   --  in which case all bets are off, but at that point...
+   -- but OTOH
+   -- ASET test
+   -- loop{
+   -- STCK
+   -- AGET test
+   -- ETCK
+   -- }
+   clean_duplicates()
    table.insert(envstk, 1, {tstk, breaking})
    local nstk = {}
    for k, v in ipairs(tstk) do
@@ -304,6 +400,7 @@ local function handle_fc(fc, autocount, lockautos)
    return
   end
   if v[1] == "SBCK" then
+   clean_duplicates()
    table.insert(envstk, 1, {tstk, breaking})
    breaking = tstk
    local nstk = {}
@@ -318,9 +415,42 @@ local function handle_fc(fc, autocount, lockautos)
    if stale then
     error("Auto " .. v[2] .. " has been lost.")
    end
-   if not ps then
+   -- This should never happen if a locked auto is in use,
+   --  but not a good reason to find out.
+   if (not ps) and (not lockautos[v[2]]) then
     if pos == 0 then
-     print("// Potential.opt: maybe possible to bring auto out of play")
+     local function canopt()
+      for i = k + 1, #fc do
+       local t = fc[i]
+       if aget_flow_breakers[t[1]] then
+        return false
+       end
+       if t[1] == "AGET" then
+        if t[2] == v[2] then
+         return false
+        end
+       end
+       if t[1] == "ASET" then
+        if t[2] == v[2] then
+         return true
+        end
+       end
+       if t[1] == "RETV" then
+        return true
+       end
+       if t[1] == "RETN" then
+        return true
+       end
+      end
+     end
+     if canopt() then
+      if lockautos[v[2]] then
+       -- make absolutely sure
+       dpop()
+       table.insert(tstk, 1, "")
+      end
+      return
+     end
     end
    end
    print("LOADSP " .. pos)
@@ -389,10 +519,16 @@ local function handle_fc(fc, autocount, lockautos)
    end
    local vp = (#tstk) + autocount
    if vp > 0 then
-       print("// tstk " .. #tstk .. " ; ac " .. autocount)
-       print("IM " .. (vp + 1)) -- +1 occupational hazard PUSHSPADD
-       print("PUSHSPADD")
-       print("POPSP")
+    if annotate_fc then print("// tstk " .. #tstk .. " ; ac " .. autocount) end
+    if vp > 3 then
+     print("IM " .. (vp + 1)) -- +1 occupational hazard PUSHSPADD
+     print("PUSHSPADD")
+     print("POPSP")
+    else
+     for i = 1, vp do
+      print("STORESP 0")
+     end
+    end
    end
    print("POPPC")
    return
@@ -452,7 +588,7 @@ local function handle_fc(fc, autocount, lockautos)
   end
   if v[1] == "IST-" then
    if instant == 0 then error("IST imbalance") end
-   instant = instant + 1
+   instant = instant - 1
    return
   end
   error("cannot handle " .. v[1])
@@ -473,7 +609,9 @@ local function handle_function(f)
  local externs = {}
  local body, terminating = handle_fstmt(f[3], f[4], autos2, lockautos, externs, global_variables, get_unique_label)
  for k, _ in pairs(externs) do
-  global_externs[k] = true
+  if not global_local_externs[k] then
+   global_externs[k] = true
+  end
  end
  local autos = {}
  for k, _ in pairs(autos2) do

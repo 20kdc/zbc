@@ -6,7 +6,9 @@
 --  because the stack wastage was going to happen anyway - cleaning it up in chunks
 --  instead of one big bundle wastes instructions solely on cleaning stack.
 local checkpoint_calls = false
-
+-- This is false for now, as some not easily resolved issues mean
+--  that autos get stored even when unneeded at checkpoint boundaries.
+local checkpoint_all_compounds = false
 return function (args, stmt, autos, lockautos, externs, global_variables, get_unique_label)
  local astlib = require("ast")
  local likeautos = {}
@@ -364,7 +366,9 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
  -- STMT COMPILERS --
 
  function compilers.compound(code, stmt, input_term)
-  table.insert(code, {"STCK"})
+  if checkpoint_all_compounds then
+   table.insert(code, {"STCK"})
+  end
   local terminating = input_term
   for _, v in ipairs(stmt[2]) do
    local t = handle_stmt(code, v, terminating)
@@ -372,11 +376,13 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
     terminating = t
    end
   end
-  if terminating == 1 then
-   -- don't bother
-   table.insert(code, {"TTCK"})
-  else
-   table.insert(code, {"ETCK"})
+  if checkpoint_all_compounds then
+   if terminating == 1 then
+    -- don't bother
+    table.insert(code, {"TTCK"})
+   else
+    table.insert(code, {"ETCK"})
+   end
   end
   return terminating
  end
@@ -398,6 +404,28 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
    table.insert(code, {"RETV"})
   end
   return 1
+ end
+
+ compilers["while"] = function (code, stmt, input_term)
+  -- As a while is a loop, it may as well have a label in it at the top.
+  -- Currently while loops are just always non-terminating.
+  local lab = get_unique_label()
+  local labend = get_unique_label()
+  table.insert(code, {"RAW", lab .. ":"})
+  table.insert(code, {"SBCK"})
+  handle_rval(code, stmt[2])
+  table.insert(code, {"DPOP"})
+  table.insert(code, {"IMPCREL", labend})
+  table.insert(code, {"RAW", "EQBRANCH"})
+  handle_stmt(code, stmt[3], -1)
+  table.insert(code, {"ETCK"})
+  table.insert(code, {"IMPCREL", lab})
+  table.insert(code, {"RAW", "POPPCREL"})
+  table.insert(code, {"RAW", labend .. ":"})
+  -- If it terminates in the body, it *may* terminate,
+  -- if it will not terminate, it may not terminate.
+  -- If that makes sense.
+  return -1
  end
 
  function compilers.extrn(code, stmt, input_term)

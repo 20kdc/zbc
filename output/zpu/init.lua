@@ -174,7 +174,8 @@ end
 --          If the top of stack is the only copy of the current value of an automatic,
 --           this will bring the automatic out of play until it is reset via another value.
 --    ASET: Define a temporary containing the new value of an automatic.
---          This consistently leaves the result value on stack in position.
+--          This will either pop the result value or leave it there.
+--          If it does or does not depends on if it's determined to be more optimal.
 --    FSTK: Write code for a complete stack flush. Does not actually affect stack management.
 --          Used for "GOTO"-like constructs.
 --    RSTK: Write code that, assuming FSTK was 'just' run execution-wise, rebuilds stack.
@@ -193,6 +194,9 @@ end
 --    HOLD: Put the current length of the temporary stack into cmd[2][1].
 --    RELE: The arguments to this are "cmd[2]" objects passed to HOLD, from BOS to TOS.
 --          This will ensure the stack layout is correct, *potentially* generating stack objects in the process.
+--    IST+: Increase the Instant number by 1.
+--          This number is used as a hint in order to avoid stack wastage that would lower performance.
+--    IST-: Decrease the Instant number by 1, unless it's 0, in which case error.
 -- The general point of this is that if stack accesses are well-timed,
 --  a situation like:
 --   auto a;
@@ -262,6 +266,7 @@ local function handle_fc(fc, autocount, lockautos)
  local envstk = {}
  local breaking = nil
  local lastwasim = false
+ local instant = 0
  local function dpop()
   if not tstk[1] then error("internal dpop underflow") end
   table.remove(tstk, 1)
@@ -331,16 +336,15 @@ local function handle_fc(fc, autocount, lockautos)
   end
   if v[1] == "ASET" then
    -- This is a stack management command, basically.
+   dpop()
    pstk[v[2]][2] = true
    for i = 1, #tstk do
     if tstk[i] == v[2] then
      tstk[i] = ""
     end
    end
-   if lockautos[v[2]] then
-    table.insert(tstk, 1, "")
+   if lockautos[v[2]] or (instant ~= 0) then
     -- In this case, the root must be kept up to date.
-    print("LOADSP 0")
     local np = (#tstk) + pstk[v[2]][1] + 1
     print("STORESP " .. (np * 4))
     pstk[v[2]][2] = false
@@ -440,6 +444,15 @@ local function handle_fc(fc, autocount, lockautos)
    print("IM " .. (((#tstk) + pstk[v[2]][1]) + 1))
    print("PUSHSPADD")
    table.insert(tstk, 1, "")
+   return
+  end
+  if v[1] == "IST+" then
+   instant = instant + 1
+   return
+  end
+  if v[1] == "IST-" then
+   if instant == 0 then error("IST imbalance") end
+   instant = instant + 1
    return
   end
   error("cannot handle " .. v[1])

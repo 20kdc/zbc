@@ -164,6 +164,7 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
   if checkpoint_calls then
    table.insert(code, {"STCK"})
   end
+  table.insert(code, {"IST+"}) -- stack wastage *will* cause more issues than it solves during a call.
   -- There are some calls which need to be handled specially,
   --  since they can be reduced to single instructions without user cost.
   local argholds = {"RELE"}
@@ -200,6 +201,7 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
   end
   table.insert(code, {"RAW", "CALL"})
   table.insert(code, {"DPOP"})
+  table.insert(code, {"IST-"})
   if checkpoint_calls then
    table.insert(code, {"ETCK"})
   end

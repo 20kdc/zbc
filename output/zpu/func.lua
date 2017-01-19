@@ -1,4 +1,13 @@
-return function (args, stmt, autos, lockautos, global_variables, get_unique_label)
+-- I, 20kdc, release this file into the public domain.
+-- No warranty is provided, implied or otherwise.
+-- This also applies to previous versions of this file which did not have this notice.
+
+-- Used to reduce call stack wastage, but this is suboptimal for perf,
+--  because the stack wastage was going to happen anyway - cleaning it up in chunks
+--  instead of one big bundle wastes instructions solely on cleaning stack.
+local checkpoint_calls = false
+
+return function (args, stmt, autos, lockautos, externs, global_variables, get_unique_label)
  local astlib = require("ast")
  local likeautos = {}
  for _, v in ipairs(args) do
@@ -25,6 +34,11 @@ return function (args, stmt, autos, lockautos, global_variables, get_unique_labe
  --  getset writes values in it so that set can retrieve them,
  --  this is used to make assignment operations consistent.
  -- As getset is only used in preparation for a set, support is usually optional.
+ -- If the nil mode is provided with any value in state,
+ --  this means the return can be optimized away, and will not be expected.
+ -- For code simplicity purposes,
+ --  this should be entirely ignored where it would be easier
+ --  to have an AST-level optimizer remove or restructure the 'dead code'.
  local function handle_rval(code, rv, mode, state)
   if not valcompilers[rv[1]] then
    error("No handler for " .. rv[1] .. " @ " .. rv[#rv])
@@ -39,8 +53,19 @@ return function (args, stmt, autos, lockautos, global_variables, get_unique_labe
  -- RVAL COMPILERS --
 
  function valcompilers.id(code, rv, mode, state)
+  -- note; yes, IK this doesn't properly follow context rules.
+  -- At some point, I think "not caring" may become a valid policy,
+  --  since if you have an extern and an auto named the same,
+  --  in the same function, then just rename the auto.
   if not likeautos[rv[2]] then
-   error("Unknown ID " .. rv[2] .. " @ " .. rv[3])
+   if not externs[rv[2]] then
+    error("Unknown ID " .. rv[2] .. " @ " .. rv[3])
+   else
+    if mode then modeerror(rv) end
+    table.insert(code, {"IM", rv[2]})
+    table.insert(code, {"DTMP"})
+    return
+   end
   end
   if mode == "getset" then
    mode = nil -- nothing special here
@@ -57,11 +82,74 @@ return function (args, stmt, autos, lockautos, global_variables, get_unique_labe
   if mode then modeerror(rv) end
   table.insert(code, {"AGET", rv[2]})
  end
+
  function valcompilers.int(code, rv, mode, state)
   if mode then modeerror(rv) end
-  table.insert(code, {"RAW", "IM " .. astlib.parse_int(rv[2])})
+  table.insert(code, {"IM", tostring(astlib.parse_int(rv[2]))})
   table.insert(code, {"DTMP"})
  end
+
+ -- Thanks to... MAGIC! (actually wrapping)
+ -- This works with rvalues *and* lvalues.
+ valcompilers["arglist("] = function (code, rv, mode, state)
+  if #rv[2] ~= 1 then error("Wrapper @ " .. rv[3] .. " had !=1 param.") end
+  return handle_rval(code, rv[2][1], mode, state)
+ end
+
+ -- RVALs : not-quite-primary general
+
+ function valcompilers.call(code, rv, mode, state)
+  if mode then modeerror(rv) end
+  if checkpoint_calls then
+   table.insert(code, {"STCK"})
+  end
+  -- There are some calls which need to be handled specially,
+  --  since they can be reduced to single instructions without user cost.
+  local argholds = {"RELE"}
+  for i = 1, #rv[3] do
+   local k = (#rv[3] - i) + 1
+   local v = rv[3][k]
+   local h = {}
+   handle_rval(code, v)
+   table.insert(code, {"HOLD", h})
+   table.insert(argholds, h)
+  end
+  if rv[2][1] ~= "id" then
+   local finalhold = {}
+   handle_rval(code, rv[2])
+   table.insert(code, {"HOLD", finalhold})
+   table.insert(argholds, finalhold)
+   -- dump everything in the right place on stack
+   table.insert(code, argholds)
+  else
+   -- if it's an ID, risk setting everything up beforehand
+   --  then putting the call address on top and re-sanity-checking,
+   --  because this is guaranteed to be relatively OK
+   -- (could save an extra instruction LOADSPing the call address
+   --   that just got set up, and wasn't usable because of the stack layout)
+   -- (note, this only helps anything because ID never burns stack)
+   local finalhold = {}
+   table.insert(code, argholds)
+   local argholds2 = {}
+   for k, v in ipairs(argholds) do argholds2[k] = v end
+   handle_rval(code, rv[2])
+   table.insert(code, {"HOLD", finalhold})
+   table.insert(argholds2, finalhold)
+   table.insert(code, argholds2)
+  end
+  table.insert(code, {"RAW", "CALL"})
+  table.insert(code, {"DPOP"})
+  if checkpoint_calls then
+   table.insert(code, {"ETCK"})
+  end
+  if not state then
+   table.insert(code, {"RAW", "IM _memreg"})
+   table.insert(code, {"RAW", "LOAD"})
+   table.insert(code, {"DTMP"})
+  end
+ end
+ 
+ -- RVALs : operators
 
  function valcompilers.puop(code, rv, mode, state)
   if not rv[4] then
@@ -120,11 +208,19 @@ return function (args, stmt, autos, lockautos, global_variables, get_unique_labe
 
  function valcompilers.pbop(code, rv, mode, state)
   local simpleops = {}
-  simpleops["+"] = {"ADD", true}
-  simpleops["-"] = {"SUB"}
-  simpleops["*"] = {"SLOWMULT"}
-  simpleops["/"] = {"DIV", true}
-  simpleops["%"] = {"MOD", true}
+  -- "nb" is the direction parameter.
+  -- If A - B is coming out as B - A, invert it for -.
+  local function simple(n, nb)
+   return {function ()
+    table.insert(code, {"RAW", n})
+   end, nb}
+  end
+  -- for symmetric ops, default to true
+  simpleops["+"] = simple("ADD", true)
+  simpleops["-"] = simple("SUB", false)
+  simpleops["*"] = simple("SLOWMULT", true)
+  simpleops["/"] = simple("DIV", true)
+  simpleops["%"] = simple("MOD", true)
   if simpleops[rv[2]] then
    if mode then modeerror(rv) end
    local goldena = {}
@@ -143,7 +239,7 @@ return function (args, stmt, autos, lockautos, global_variables, get_unique_labe
    table.insert(code, {"RELE", goldena, goldenb})
    table.insert(code, {"DPOP"})
    table.insert(code, {"DPOP"})
-   table.insert(code, {"RAW", simpleops[rv[2]][1]})
+   simpleops[rv[2]][1]()
    table.insert(code, {"DTMP"})
    return
   end
@@ -151,7 +247,16 @@ return function (args, stmt, autos, lockautos, global_variables, get_unique_labe
    -- It doesn't work that way.
    if mode then modeerror(rv) end
    handle_rval(code, rv[4])
+   local bk = {}
+   if not state then
+    table.insert(code, {"RAW", "LOADSP 0"})
+    table.insert(code, {"HOLD", bk})
+    table.insert(code, {"DTMP"})
+   end
    handle_rval(code, rv[3], "set")
+   if not state then
+    table.insert(code, {"RELE", bk})
+   end
    return
   end
   if rv[2]:sub(1, 1) == "=" then
@@ -175,9 +280,18 @@ return function (args, stmt, autos, lockautos, global_variables, get_unique_labe
     table.insert(code, {"RELE", goldena, goldenb})
     table.insert(code, {"DPOP"})
     table.insert(code, {"DPOP"})
-    table.insert(code, {"RAW", simpleops[opn][1]})
+    simpleops[opn][1]()
     table.insert(code, {"DTMP"})
+    local bk = {}
+    if not state then
+     table.insert(code, {"RAW", "LOADSP 0"})
+     table.insert(code, {"HOLD", bk})
+     table.insert(code, {"DTMP"})
+    end
     handle_rval(code, rv[3], "set", lstate)
+    if not state then
+     table.insert(code, {"RELE", bk})
+    end
     return
    end
   end
@@ -205,7 +319,7 @@ return function (args, stmt, autos, lockautos, global_variables, get_unique_labe
  end
 
  function compilers.rvalue(code, stmt, input_term)
-  handle_rval(code, stmt[2])
+  handle_rval(code, stmt[2], nil, true)
   return 0
  end
 
@@ -221,6 +335,13 @@ return function (args, stmt, autos, lockautos, global_variables, get_unique_labe
    table.insert(code, {"RETV"})
   end
   return 1
+ end
+
+ function compilers.extrn(code, stmt, input_term)
+  for _, v in ipairs(stmt[2]) do
+   externs[v] = true
+  end
+  return 0
  end
 
  local fc = {}

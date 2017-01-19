@@ -32,6 +32,9 @@ end
 --   an additional auto is created as a pointer to the rest.
 --  Unsure how relevant that is here.)
 local global_variables = {}
+-- this is used later
+local global_externs = {}
+local global_flist = {}
 for k, v in ipairs(ast) do
  if v[1] == "vardef" then
   print(".globl " .. v[2])
@@ -159,6 +162,7 @@ end
 -- 1. The function code is written with a wrapping assembly,
 --     used to drive the stack management routines.
 --    The available instructions are:
+--    IM: May as well be RAW, "IM <arg>" if not for the automatic NOP insertion.
 --    AGET: Pull an automatic.
 --          This may or may not alter stack.
 --    APTR: Pull the address of an automatic from pstk.
@@ -257,11 +261,21 @@ local function handle_fc(fc, autocount, lockautos)
  local tstk = {}
  local envstk = {}
  local breaking = nil
+ local lastwasim = false
  local function dpop()
   if not tstk[1] then error("internal dpop underflow") end
   table.remove(tstk, 1)
  end
  local function handle_sc(k, v)
+  if v[1] == "IM" then
+   if lastwasim then
+    print("NOP")
+   end
+   print("IM " .. v[2])
+   lastwasim = true
+   return
+  end
+  lastwasim = false
   if v[1] == "RAW" then
    print(v[2])
    return
@@ -443,13 +457,17 @@ local function handle_function(f)
  -- f[3] is the arguments list, f[4] the statement.
  local autos2 = {}
  local lockautos = {}
- local body, terminating = handle_fstmt(f[3], f[4], autos2, lockautos, global_variables, get_unique_label)
+ local externs = {}
+ local body, terminating = handle_fstmt(f[3], f[4], autos2, lockautos, externs, global_variables, get_unique_label)
+ for k, _ in pairs(externs) do
+  global_externs[k] = true
+ end
  local autos = {}
  for k, _ in pairs(autos2) do
   table.insert(autos, k)
  end
  local fincode = {
-  {"RAW", "IM " .. (1 - #autos)},
+  {"IM", tostring(1 - #autos)},
   {"RAW", "PUSHSPADD"},
   {"RAW", "POPSP"}
  }
@@ -475,14 +493,22 @@ local function handle_function(f)
  if not terminating then
   table.insert(fincode, {"RETV"})
  end
- print(f[2] .. ":")
- handle_fc(fincode, #autos, lockautos)
+ table.insert(global_flist, {f[2], fincode, #autos, lockautos})
 end
 
 for k, v in ipairs(ast) do
  if v[1] == "function" then
   handle_function(v)
  end
+end
+
+for k, _ in pairs(global_externs) do
+ print(".extern " .. k)
+end
+
+for _, v in ipairs(global_flist) do
+ print(v[1] .. ":")
+ handle_fc(v[2], v[3], v[4])
 end
 
 -- Now just deal with all that data.

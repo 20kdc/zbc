@@ -12,8 +12,17 @@ local ast = astlib.read_mshl(io.stdin)
 local defines = {}
 local condensechars = false
 local bigendian = false
+local indexnicer = false
 local args = {...}
 local p = 1
+
+-- -D: Define. Ex. -DHELLO 1
+-- -C: Condense. Ex. -C
+-- -B: Big-endian (used by Condense). Ex. -C -B
+-- -I: Index multiply by WORD_VALS. Ex. -DWORD_VALS 4 -I
+--     This is a compatibility setting,
+--      so when code using indexes hits the compiler,
+--      any required index multiplication is already done.
 
 while p < #args do
  local arg = args[p]
@@ -29,7 +38,12 @@ while p < #args do
     bigendian = true
     p = p + 1
    else
-    error("argument unknown: " .. arg)
+    if arg:sub(1, 2) == "-I" then
+     indexnicer = true
+     p = p + 1
+    else
+     error("argument unknown: " .. arg)
+    end
    end
   end
  end
@@ -133,6 +147,12 @@ local function handle_more_rvalues(rv)
   return
  end
  if (rv[1] == "call") or (rv[1] == "index") then
+  if indexnicer and (rv[1] == "index") then
+   if #rv[3] ~= 1 then error("Multiple indices with -I @ " .. rv[4]) end
+   -- Do this *before* constantization
+   local o = rv[3][1]
+   rv[3][1] = {"pbop", "*", o, {"int", "4", o[#o]}, o[#o]}
+  end
   handle_rvalue(rv[2])
   for _, v in ipairs(rv[3]) do
    handle_rvalue(v)

@@ -117,6 +117,48 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
 
  -- RVALs : not-quite-primary general
 
+ function valcompilers.index(code, rv, mode, state)
+  if mode == "set" then
+   if state then
+    -- Don't even bother to go through and gen. basecode
+    table.insert(code, {"RELE", state})
+    table.insert(code, {"RAW", "STORE"})
+    table.insert(code, {"DPOP"})
+    table.insert(code, {"DPOP"})
+    return
+   end
+  end
+  handle_rval(code, rv[2])
+  local baseP = {}
+  table.insert(code, {"HOLD", baseP})
+  if (#rv[3]) ~= 1 then error("Indexer not the right size @ " .. rv[4]) end
+  handle_rval(code, rv[3][1])
+  local baseI = {}
+  table.insert(code, {"HOLD", baseI})
+  table.insert(code, {"RELE", baseP, baseI})
+  table.insert(code, {"DPOP"})
+  table.insert(code, {"DPOP"})
+  table.insert(code, {"RAW", "ADD"})
+  table.insert(code, {"DTMP"})
+  if mode == "getset" then
+   table.insert(code, {"HOLD", state})
+   table.insert(code, {"RAW", "LOADSP 0"})
+   table.insert(code, {"RAW", "LOAD"})
+   table.insert(code, {"DTMP"})
+   return
+  end
+  if mode == "set" then
+   -- set w/getset is handled above.
+   table.insert(code, {"RAW", "STORE"})
+   table.insert(code, {"DPOP"})
+   table.insert(code, {"DPOP"})
+   return
+  end
+  if mode then modeerror(rv) end
+  -- it's known that TOS is a "useless temp." anyway
+  table.insert(code, {"RAW", "LOAD"})
+ end
+
  function valcompilers.call(code, rv, mode, state)
   if mode then modeerror(rv) end
   if checkpoint_calls then

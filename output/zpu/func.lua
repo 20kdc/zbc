@@ -61,8 +61,27 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
    if not externs[rv[2]] then
     error("Unknown ID " .. rv[2] .. " @ " .. rv[3])
    else
-    if mode then modeerror(rv) end
+    -- no matter what, this is always first
     table.insert(code, {"IM", rv[2]})
+    if global_variables[rv[2]] then
+     if mode == "getset" then
+      mode = nil
+     end
+     if mode == "set" then
+      table.insert(code, {"RAW", "STORE"})
+      table.insert(code, {"DPOP"})
+      return
+     end
+     if mode == "ptr" then
+      table.insert(code, {"DTMP"})
+      return
+     end
+     if mode then modeerror(rv) end
+     table.insert(code, {"RAW", "LOAD"})
+     table.insert(code, {"DTMP"})
+     return
+    end
+    if mode then modeerror(rv) end
     table.insert(code, {"DTMP"})
     return
    end

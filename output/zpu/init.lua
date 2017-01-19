@@ -105,7 +105,7 @@ local function stack_flush(pstk, tstk, chkp, fake)
   end
   print(" <pv0> <pv1> <pv2>...")
  end
- local heavyduty = #tstk > 4
+ local heavyduty = #tstk > 6
  for i = 1, chks do
   local v = tstk[1]
   if heavyduty then
@@ -143,9 +143,9 @@ local function stack_flush(pstk, tstk, chkp, fake)
    table.remove(tstk, 1)
   end
   if not fake then
-   print("PUSHSP")
-   print("IM " .. (chks * 4))
-   print("ADD")
+   -- +1 is occupational hazard of using PUSHSPADD
+   print("IM " .. (chks + 1))
+   print("PUSHSPADD")
    print("POPSP")
   end
  end
@@ -161,6 +161,8 @@ end
 --    The available instructions are:
 --    AGET: Pull an automatic.
 --          This may or may not alter stack.
+--    APTR: Pull the address of an automatic from pstk.
+--          The automatic SHOULD be set as a direct automatic.
 --    DTMP: Define a useless temporary.
 --          You should use this whenever something is pushed to stack for any meaningful length.
 --          Intermediates as part of one statement don't count.
@@ -184,6 +186,9 @@ end
 --    RAW: Raw ZPU assembly.
 --    AUTO: Assign pstk variable. (stale)
 --    ARG: Assign pstk variable. (not stale)
+--    HOLD: Put the current length of the temporary stack into cmd[2][1].
+--    RELE: The arguments to this are "cmd[2]" objects passed to HOLD, from BOS to TOS.
+--          This will ensure the stack layout is correct, *potentially* generating stack objects in the process.
 -- The general point of this is that if stack accesses are well-timed,
 --  a situation like:
 --   auto a;
@@ -366,10 +371,9 @@ local function handle_fc(fc, autocount, lockautos)
    end
    local vp = (#tstk) + autocount
    if vp > 0 then
-       print("PUSHSP")
        print("// tstk " .. #tstk .. " ; ac " .. autocount)
-       print("IM " .. (4 * vp))
-       print("ADD")
+       print("IM " .. (vp + 1)) -- +1 occupational hazard PUSHSPADD
+       print("PUSHSPADD")
        print("POPSP")
    end
    print("POPPC")
@@ -381,6 +385,47 @@ local function handle_fc(fc, autocount, lockautos)
   end
   if v[1] == "DPOP" then
    dpop()
+   return
+  end
+  if v[1] == "HOLD" then
+   v[2][1] = #tstk
+   return
+  end
+  if v[1] == "RELE" then
+   -- The optimal case is where the stack is:
+   -- <TOS> A B C D <BOS>
+   -- and A B C D is wanted.
+   -- RELE goes from BOS to TOS.
+   -- As it is, only the bottom half of a stack can be safely copied.
+   local matchc = 0
+   for m = 1, (#v - 1) do
+    local ok = true
+    for i = 1, m do
+     -- m is the expected stack size
+     local eofs = m - i
+     local r = v[i + 1][1]
+     local ofs = (#tstk) - r
+     if ofs ~= eofs then
+      ok = false
+     end
+    end
+    if ok then
+     matchc = m
+    end
+   end
+   for i = 2 + matchc, #v do
+    local r = v[i][1]
+    local ofs = ((#tstk) - r) * 4
+    print("LOADSP " .. ofs)
+    table.insert(tstk, 1, "")
+   end
+   return
+  end
+  if v[1] == "APTR" then
+   -- The +1 is an occupational hazard of using PUSHSPADD rather than PUSHSP IM <num> ADD.
+   print("IM " .. (((#tstk) + pstk[v[2]][1]) + 1))
+   print("PUSHSPADD")
+   table.insert(tstk, 1, "")
    return
   end
   error("cannot handle " .. v[1])
@@ -404,12 +449,11 @@ local function handle_function(f)
   table.insert(autos, k)
  end
  local fincode = {
-  {"RAW", "PUSHSP"},
-  {"RAW", "IM " .. (4 * #autos)},
-  {"RAW", "SUB"},
+  {"RAW", "IM " .. (1 - #autos)},
+  {"RAW", "PUSHSPADD"},
   {"RAW", "POPSP"}
  }
- if #autos < 4 then
+ if #autos < 3 then
   fincode = {}
   for i = 1, #autos do
    -- Doesn't exactly matter *what* is pushed, only that it is.
@@ -431,6 +475,7 @@ local function handle_function(f)
  if not terminating then
   table.insert(fincode, {"RETV"})
  end
+ print(f[2] .. ":")
  handle_fc(fincode, #autos, lockautos)
 end
 

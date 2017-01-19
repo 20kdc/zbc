@@ -139,8 +139,9 @@ end
 local function handle_char_leinserter(cr, ch, ip)
  local p = 1
  for i = 1, ip do
-  p = p * 256
+  p = p * 0x100
  end
+ return cr + (ch * p)
 end
 
 local function handle_char(cr, ch, be, ra, ip)
@@ -182,6 +183,7 @@ ast.parse_chars = function (str, line, bigendian, radjust)
   if ip == 4 then
    table.insert(work, current)
    ip = 0
+   current = 0
   end
  end
  if ip ~= 0 then

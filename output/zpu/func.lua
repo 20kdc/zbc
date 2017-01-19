@@ -9,7 +9,7 @@ local checkpoint_calls = false
 -- This is false for now, as some not easily resolved issues mean
 --  that autos get stored even when unneeded at checkpoint boundaries.
 local checkpoint_all_compounds = false
-return function (args, stmt, autos, lockautos, externs, global_variables, get_unique_label)
+return function (args, stmt, autos, lockautos, externs, global_variables, get_unique_label, gen_words, str_term)
  local astlib = require("ast")
  local likeautos = {}
  for _, v in ipairs(args) do
@@ -363,6 +363,26 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
   error("Unrecognized PBOP " .. rv[2] .. " @ " .. rv[5])
  end
 
+ -- Not sure how to handle this, defer to compiler core
+ function valcompilers.string(code, rv, mode, state)
+  if mode then modeerror(rv) end
+  local ps = astlib.parse_str(rv[2], astlib.default_escapes, rv[3]) .. str_term
+  ps = astlib.parse_chars(ps, rv[3], true, false)
+  table.insert(code, {"IM", gen_words(ps)})
+  table.insert(code, {"DTMP"})
+ end
+
+ function valcompilers.char(code, rv, mode, state)
+  if mode then modeerror(rv) end
+  local ps = astlib.parse_str(rv[2], astlib.default_escapes, rv[3])
+  local r = astlib.parse_chars(ps, rv[3], true, true)
+  if #r ~= 1 then
+   error("Badly sized char @ " .. rv[3])
+  end
+  table.insert(code, {"IM", tostring(r[1])})
+  table.insert(code, {"DTMP"})
+ end
+
  -- STMT COMPILERS --
 
  function compilers.compound(code, stmt, input_term)
@@ -431,6 +451,17 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
  function compilers.extrn(code, stmt, input_term)
   for _, v in ipairs(stmt[2]) do
    externs[v] = true
+  end
+  return 0
+ end
+
+ function compilers.auto(code, stmt, input_term)
+  for _, v in ipairs(stmt[2]) do
+   if v[2] then
+    error("Still need to work out how vector definitions should work @ " .. stmt[3])
+   end
+   likeautos[v[1]] = true
+   autos[v[1]] = true
   end
   return 0
  end

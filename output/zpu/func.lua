@@ -303,17 +303,18 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
  function valcompilers.pbop(code, rv, mode, state)
   local simpleops = {}
 
-  -- for symmetric ops, default to true unless generally more efficient otherwise due to usecase.
+  -- for symmetric ops, use "symmetric", otherwise:
   -- false: Pop A first. true: Pop B first.
-  simpleops["+"] = oph_simple(code, "ADD", true)
-  simpleops["*"] = oph_simple(code, "SLOWMULT", true)
+  -- Notably symmetric ops *should* default to true in implementation.
+  simpleops["+"] = oph_simple(code, "ADD", "symmetric")
+  simpleops["*"] = oph_simple(code, "SLOWMULT", "symmetric")
 
-  simpleops["&"] = oph_simple(code, "AND", true)
-  simpleops["|"] = oph_simple(code, "OR", true)
-  simpleops["^"] = oph_simple(code, "XOR", true)
+  simpleops["&"] = oph_simple(code, "AND", "symmetric")
+  simpleops["|"] = oph_simple(code, "OR", "symmetric")
+  simpleops["^"] = oph_simple(code, "XOR", "symmetric")
 
-  simpleops["=="] = oph_simple(code, "EQ", true)
-  simpleops["!="] = oph_simple(code, "NEQ", true)
+  simpleops["=="] = oph_simple(code, "EQ", "symmetric")
+  simpleops["!="] = oph_simple(code, "NEQ", "symmetric")
 
   -- non-symmetrics
 
@@ -331,16 +332,38 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
    if mode then modeerror(rv) end
    local goldena = {}
    local goldenb = {}
-   if simpleops[rv[2]][2] then
+   if simpleops[rv[2]][2] == true then
     handle_rval(code, rv[3])
     table.insert(code, {"HOLD", goldena})
     handle_rval(code, rv[4])
     table.insert(code, {"HOLD", goldenb})
    else
-    handle_rval(code, rv[4])
-    table.insert(code, {"HOLD", goldena})
-    handle_rval(code, rv[3])
-    table.insert(code, {"HOLD", goldenb})
+    if simpleops[rv[2]][2] == false then
+     handle_rval(code, rv[4])
+     table.insert(code, {"HOLD", goldena})
+     handle_rval(code, rv[3])
+     table.insert(code, {"HOLD", goldenb})
+    else
+     local mcode1 = {}
+     handle_rval(mcode1, rv[3])
+     table.insert(mcode1, {"HOLD", goldena})
+     handle_rval(mcode1, rv[4])
+     table.insert(mcode1, {"HOLD", goldenb})
+
+     local mcode2 = {}
+     handle_rval(mcode2, rv[4])
+     table.insert(mcode2, {"HOLD", goldena})
+     handle_rval(mcode2, rv[3])
+     table.insert(mcode2, {"HOLD", goldenb})
+     
+     -- But before this code is compiled, first we have to talk about parallel universes.
+     -- Parallel universes are created by the "PU" pseudoassembly statement.
+     -- This statement is used to ask the stack management system to pick the more efficient choice.
+     -- By using parallel universes, symmetric operations can be scheduled in whichever way is fastest,
+     --  at the small cost of not having a consistent order.
+     -- And yes, I called it "PU" to make this joke.
+     table.insert(code, {"PU", mcode1, mcode2})
+    end
    end
    table.insert(code, {"RELE", goldena, goldenb})
    table.insert(code, {"DPOP"})

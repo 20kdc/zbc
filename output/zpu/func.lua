@@ -175,6 +175,9 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
    local v = rv[3][k]
    local h = {}
    handle_rval(code, v)
+   -- Use a null operation, because this general area of stack is going to turn into the call-zone.
+   table.insert(code, {"DPOP"})
+   table.insert(code, {"DTMP"})
    table.insert(code, {"HOLD", h})
    table.insert(argholds, h)
   end
@@ -201,14 +204,14 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
    table.insert(argholds2, finalhold)
    table.insert(code, argholds2)
   end
-  table.insert(code, {"RAW", "CALL"})
   table.insert(code, {"DPOP"})
+  table.insert(code, {"RAW", "CALL"})
   table.insert(code, {"IST-"})
   if checkpoint_calls then
    table.insert(code, {"ETCK"})
   end
   if not state then
-   table.insert(code, {"RAW", "IM _memreg"})
+   table.insert(code, {"IM", "_memreg"})
    table.insert(code, {"RAW", "LOAD"})
    table.insert(code, {"DTMP"})
   end
@@ -216,19 +219,45 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
  
  -- RVALs : operators
 
- function valcompilers.puop(code, rv, mode, state)
-  if not rv[4] then
-   local simpleops = {}
-   simpleops["-"] = "NEG"
-   simpleops["~"] = "NOT"
-   if simpleops[rv[2]] then
-    if mode then modeerror(rv) end
-    handle_rval(code, rv[3])
-    table.insert(code, {"DPOP"})
-    table.insert(code, {"RAW", simpleops[rv[2]]})
-    table.insert(code, {"DTMP"})
-    return
+ -- "nb" is the direction parameter.
+ -- For unary ops, this means one thing, for binary ops, another.
+ -- If A - B is coming out as B - A, invert it for -.
+ local function oph_simple_element(code, n)
+  if type(n) == "table" then
+   table.insert(code, n)
+  else
+   table.insert(code, {"RAW", n})
+  end
+ end
+ local function oph_simple(code, n, nb)
+  return {function ()
+   if type(n) == "table" then
+    for _, v in ipairs(n) do
+     oph_simple_element(code, v)
+    end
+   else
+    oph_simple_element(code, n)
    end
+  end, nb}
+ end
+
+ function valcompilers.puop(code, rv, mode, state)
+  local simpleops = {}
+  simpleops["-"] = oph_simple(code, "NEG", false)
+  simpleops["~"] = oph_simple(code, "NOT", false)
+  simpleops["!"] = oph_simple(code, {{"IM", "0"}, "EQ"}, false)
+  if simpleops[rv[2]] then
+   if rv[4] ~= simpleops[rv[2]][2] then
+    error("Operation " .. rv[2] .. " not usable in that way @ " .. rv[5])
+   end
+   if mode then modeerror(rv) end
+   handle_rval(code, rv[3])
+   table.insert(code, {"DPOP"})
+   simpleops[rv[2]][1]()
+   table.insert(code, {"DTMP"})
+   return
+  end
+  if not rv[4] then
    if rv[2] == "&" then
     if mode then modeerror(rv) end
     handle_rval(code, rv[3], "ptr")
@@ -273,19 +302,31 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
 
  function valcompilers.pbop(code, rv, mode, state)
   local simpleops = {}
-  -- "nb" is the direction parameter.
-  -- If A - B is coming out as B - A, invert it for -.
-  local function simple(n, nb)
-   return {function ()
-    table.insert(code, {"RAW", n})
-   end, nb}
-  end
-  -- for symmetric ops, default to true
-  simpleops["+"] = simple("ADD", true)
-  simpleops["-"] = simple("SUB", false)
-  simpleops["*"] = simple("SLOWMULT", true)
-  simpleops["/"] = simple("DIV", true)
-  simpleops["%"] = simple("MOD", true)
+
+  -- for symmetric ops, default to true unless generally more efficient otherwise due to usecase.
+  -- false: Pop A first. true: Pop B first.
+  simpleops["+"] = oph_simple(code, "ADD", true)
+  simpleops["*"] = oph_simple(code, "SLOWMULT", true)
+
+  simpleops["&"] = oph_simple(code, "AND", true)
+  simpleops["|"] = oph_simple(code, "OR", true)
+  simpleops["^"] = oph_simple(code, "XOR", true)
+
+  simpleops["=="] = oph_simple(code, "EQ", true)
+  simpleops["!="] = oph_simple(code, "NEQ", true)
+
+  -- non-symmetrics
+
+  simpleops["-"] = oph_simple(code, "SUB", true)
+  simpleops["/"] = oph_simple(code, "DIV", false)
+  simpleops["%"] = oph_simple(code, "MOD", false)
+
+  -- wow those are long names
+  simpleops["<"] = oph_simple(code, "LESSTHAN", false)
+  simpleops["<="] = oph_simple(code, "LESSTHANOREQUAL", false)
+  simpleops[">"] = oph_simple(code, "LESSTHAN", true)
+  simpleops[">="] = oph_simple(code, "LESSTHANOREQUAL", true)
+
   if simpleops[rv[2]] then
    if mode then modeerror(rv) end
    local goldena = {}
@@ -408,7 +449,9 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
  end
 
  function compilers.rvalue(code, stmt, input_term)
-  handle_rval(code, stmt[2], nil, true)
+  if input_term ~= 1 then
+   handle_rval(code, stmt[2], nil, true)
+  end
   return 0
  end
 
@@ -446,6 +489,23 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
   -- if it will not terminate, it may not terminate.
   -- If that makes sense.
   return -1
+ end
+
+ compilers["if"] = function (code, stmt, input_term)
+  local labend = get_unique_label()
+  table.insert(code, {"SBCK"})
+  if input_term ~= 1 then
+   handle_rval(code, stmt[2])
+   table.insert(code, {"DPOP"})
+   table.insert(code, {"IMPCREL", labend})
+   table.insert(code, {"RAW", "EQBRANCH"})
+  end
+  local tm = handle_stmt(code, stmt[3], input_term)
+  table.insert(code, {"ETCK"})
+  if input_term ~= 1 then
+   table.insert(code, {"RAW", labend .. ":"})
+  end
+  return tm
  end
 
  function compilers.extrn(code, stmt, input_term)

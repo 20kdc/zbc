@@ -83,6 +83,8 @@ print(".section .text")
 -- Via this system, designed with a stack machine in mind,
 --  more efficient code should be produced.
 
+local global_last_was_im = false
+
 -- Finds an auto.
 local function find_on_stack(pstk, tstk, aid)
  for i = 1, #tstk do
@@ -130,10 +132,16 @@ local function stack_flush(pstk, tstk, chkp, fake)
    -- if it's already fine on this stack, don't bother
    if tstk[dofs] ~= v then
     if heavyduty then
-     if not fake then print("LOADSP " .. (4 * (i - 1))) end
+     if not fake then
+      print("LOADSP " .. (4 * (i - 1)))
+      global_last_was_im = false
+     end
      ofs = ofs + 4
     end
-    if not fake then print("STORESP " .. ofs) end
+    if not fake then
+     print("STORESP " .. ofs)
+     global_last_was_im = false
+    end
     if pv then
      -- No longer stale.
      pstk[v][2] = false
@@ -144,13 +152,19 @@ local function stack_flush(pstk, tstk, chkp, fake)
    else
     -- can be discarded
     if not heavyduty then
-     if not fake then print("STORESP 0") end
+     if not fake then
+      print("STORESP 0")
+      global_last_was_im = false
+     end
     end
    end
   else
    -- can be discarded
    if not heavyduty then
-    if not fake then print("STORESP 0") end
+    if not fake then
+     print("STORESP 0")
+     global_last_was_im = false
+    end
    end
   end
   if not heavyduty then
@@ -167,6 +181,7 @@ local function stack_flush(pstk, tstk, chkp, fake)
    print("IM " .. (chks + 1))
    print("PUSHSPADD")
    print("POPSP")
+   global_last_was_im = false
   end
  end
  -- Now the length is the same, finish off the revert.
@@ -315,9 +330,9 @@ local function handle_fc(fc, autocount, lockautos)
  local tstk = {}
  local envstk = {}
  local breaking = nil
- local lastwasim = false
  local instant = 0
  local lastraw = false
+ global_last_was_im = false
  local function dpop()
   if not tstk[1] then error("internal dpop underflow") end
   table.remove(tstk, 1)
@@ -335,29 +350,29 @@ local function handle_fc(fc, autocount, lockautos)
  end
  local function handle_sc(k, v)
   if v[1] == "IM" then
-   if lastwasim then
+   if global_last_was_im then
     print("NOP")
    end
    print("IM " .. v[2])
-   lastwasim = true
+   global_last_was_im = true
    lastraw = false
    return
   end
   if v[1] == "IMPCREL" then
-   if lastwasim then
+   if global_last_was_im then
     print("NOP")
    end
    print("IMPCREL " .. v[2])
-   lastwasim = true
+   global_last_was_im = true
    lastraw = false
    return
   end
-  lastwasim = false
   if v[1] == "RAW" then
    if (not lastraw) and annotate_fc then
     print("// RAW:")
    end
    print(v[2])
+   global_last_was_im = false
    lastraw = true
    return
   end
@@ -464,6 +479,7 @@ local function handle_fc(fc, autocount, lockautos)
    else
     table.insert(tstk, 1, v[2])
    end
+   global_last_was_im = false
    return
   end
   if v[1] == "ASET" then
@@ -479,6 +495,7 @@ local function handle_fc(fc, autocount, lockautos)
     -- In this case, the root must be kept up to date.
     local np = (#tstk) + pstk[v[2]][1] + 1
     print("STORESP " .. (np * 4))
+    global_last_was_im = false
     pstk[v[2]][2] = false
    else
     table.insert(tstk, 1, v[2])
@@ -517,6 +534,7 @@ local function handle_fc(fc, autocount, lockautos)
    if v[1] == "RETN" then
     print("IM _memreg")
     print("STORE")
+    global_last_was_im = false
     dpop()
    end
    local vp = (#tstk) + autocount
@@ -533,6 +551,7 @@ local function handle_fc(fc, autocount, lockautos)
     end
    end
    print("POPPC")
+   global_last_was_im = false
    return
   end
   if v[1] == "DTMP" then
@@ -573,6 +592,7 @@ local function handle_fc(fc, autocount, lockautos)
     local r = v[i][1]
     local ofs = ((#tstk) - r) * 4
     print("LOADSP " .. ofs)
+    global_last_was_im = false
     table.insert(tstk, 1, "")
    end
    return
@@ -581,6 +601,7 @@ local function handle_fc(fc, autocount, lockautos)
    -- The +1 is an occupational hazard of using PUSHSPADD rather than PUSHSP IM <num> ADD.
    print("IM " .. (((#tstk) + pstk[v[2]][1]) + 1))
    print("PUSHSPADD")
+   global_last_was_im = false
    table.insert(tstk, 1, "")
    return
   end

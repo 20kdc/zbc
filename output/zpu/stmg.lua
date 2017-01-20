@@ -1,3 +1,6 @@
+-- I, 20kdc, release this file into the public domain.
+-- No warranty is provided, implied or otherwise.
+
 -- Function code is written via a multi-stage process:
 -- 1. The function code is written with a wrapping assembly,
 --     used to drive the stack management routines.
@@ -137,14 +140,15 @@ aget_flow_breakers["SBCK"] = true
 
 -- The actual system, helper function for PU cloning.
 local function cloner(t, map)
- if not map then map = {} end
- if map[t] then return map[t] end
- if not t then return end
+ local root = false
+ if not map then map = {} root = true end
+ if t == nil then return nil end
  local tp = type(t)
  if tp == "string" then return t end
  if tp == "number" then return t end
  if tp == "boolean" then return t end
  if tp == "table" then
+  if map[t] then return map[t] end
   local nt = {}
   map[t] = nt
   for k, v in pairs(t) do
@@ -157,7 +161,8 @@ end
 
 -- "lockautos" is used for cases where pointers to an auto are used.
 -- In this case, the auto has to be consistently read from the same place.
-local create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, global_last_was_im, annotate_fc, autocount, lockautos)
+local create_stack_system = nil
+create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, global_last_was_im, annotate_fc, autocount, lockautos, print)
  -- Stack System Brief
 
  -- pstk is "permanent context".
@@ -206,15 +211,15 @@ local create_stack_system = function (pstk, tstk, envstk, breaking, instant, las
   local chks = (#tstk - #chkp)
   -- tstk 2, chkp 1, result is 1, so indexes > 1 are in checkpoint.
   if (not fake) and annotate_fc then
-   io.write("// " .. chks .. ";")
+   local building = "// " .. chks .. ";"
    for _, v in ipairs(tstk) do
     local ls = "<T>"
     if v ~= "" then
      ls = v
     end
-    io.write(" " .. ls)
+    building = building .. " " .. ls
    end
-   print(" <pv0> <pv1> <pv2>...")
+   print(building .. " <pv0> <pv1> <pv2>...")
   end
   local heavyduty = #tstk > 6
   for i = 1, chks do
@@ -618,23 +623,53 @@ local create_stack_system = function (pstk, tstk, envstk, breaking, instant, las
     -- This will be properly implemented if/when the stack management system is properly refactored.
     -- (NOTE: Other commands that are checking for optimization barriers
     --   should look at all universes, as they are all possible by specification.)
-    for k, sv in ipairs(v[2]) do
-     local pk = k
-     system.handle_sc(function ()
-      pk = pk + 1
-      if not v[2][pk] then
-       return lookahead()
-      end
-      return v[2][pk]
-     end, sv)
+    local target = 2
+    -- a lot of lines
+    local targetlines = 0xFFFFFFF
+
+    local backlook = {}
+    local bkv = lookahead()
+    while bkv do
+     table.insert(backlook, bkv)
+     bkv = lookahead()
     end
-    if annotate_fc then print("// [/PU]") end
+
+    local function makelookahead(k, tgt)
+     local pk = k
+     local rk = 0
+     return function ()
+      pk = pk + 1
+      if not v[tgt][pk] then
+       rk = rk + 1
+       return backlook[rk]
+      end
+      return v[tgt][pk]
+     end
+    end
+
+    for i = 2, #v do
+     local l = 0
+     local ns = system.clone(function () l = l + 1 end)
+     for k, sv in ipairs(v[i]) do
+      ns.handle_sc(makelookahead(k, i), sv)
+     end
+     if l < targetlines then
+      target = i
+      targetlines = l
+     end
+    end
+    for k, sv in ipairs(v[target]) do
+     system.handle_sc(makelookahead(k, target), sv)
+    end
+    if annotate_fc then print("// [/PU (used U" .. (target - 1) .. "@" .. targetlines .. ")]") end
     return
    end
    error("cannot handle " .. v[1])
-  end, ["clone"] = function()
+  end, ["clone"] = function(printer)
    local unpack = unpack or table.unpack
-   return create_stack_system(unpack(cloner({pstk, tstk, envstk, breaking, instant, lastraw, global_last_was_im, false, autocount, lockautos})))
+   local r = cloner({pstk, tstk, envstk, breaking, instant, lastraw, global_last_was_im, false, autocount, lockautos})
+   r[#r + 1] = printer
+   return create_stack_system(unpack(r))
   end, ["handle_fc"] = function (fc)
    for k, v in ipairs(fc) do
     local pk = k
@@ -655,8 +690,8 @@ local function create_blank_stack_system(autocount, lockautos)
  local lastraw = false
  local global_last_was_im = false
 
- local annotate_fc = true
+ local annotate_fc = false
 
- return create_stack_system(pstk, tstk, envstk, breaking, instant, lastraw, global_last_was_im, annotate_fc, autocount, lockautos)
+ return create_stack_system(pstk, tstk, envstk, breaking, instant, lastraw, global_last_was_im, annotate_fc, autocount, lockautos, print)
 end
 return create_blank_stack_system

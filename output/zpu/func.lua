@@ -328,24 +328,28 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
   simpleops[">"] = oph_simple(code, "LESSTHAN", true)
   simpleops[">="] = oph_simple(code, "LESSTHANOREQUAL", true)
 
-  if simpleops[rv[2]] then
-   if mode then modeerror(rv) end
-   local goldena = {}
-   local goldenb = {}
-   if simpleops[rv[2]][2] == true then
-    handle_rval(code, rv[3])
+  local function handle_simple_op(opn, goldena, goldenb, lstate)
+   local function handlerv3(cod)
+    if not lstate then
+     handle_rval(cod, rv[3])
+    else
+     handle_rval(cod, rv[3], "getset", lstate)
+    end
+   end
+   if simpleops[opn][2] == true then
+    handlerv3(code)
     table.insert(code, {"HOLD", goldena})
     handle_rval(code, rv[4])
     table.insert(code, {"HOLD", goldenb})
    else
-    if simpleops[rv[2]][2] == false then
+    if simpleops[opn][2] == false then
      handle_rval(code, rv[4])
      table.insert(code, {"HOLD", goldena})
-     handle_rval(code, rv[3])
+     handlerv3(code)
      table.insert(code, {"HOLD", goldenb})
     else
      local mcode1 = {}
-     handle_rval(mcode1, rv[3])
+     handlerv3(mcode1)
      table.insert(mcode1, {"HOLD", goldena})
      handle_rval(mcode1, rv[4])
      table.insert(mcode1, {"HOLD", goldenb})
@@ -353,7 +357,7 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
      local mcode2 = {}
      handle_rval(mcode2, rv[4])
      table.insert(mcode2, {"HOLD", goldena})
-     handle_rval(mcode2, rv[3])
+     handlerv3(mcode2)
      table.insert(mcode2, {"HOLD", goldenb})
      
      -- But before this code is compiled, first we have to talk about parallel universes.
@@ -365,6 +369,13 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
      table.insert(code, {"PU", mcode1, mcode2})
     end
    end
+  end
+
+  if simpleops[rv[2]] then
+   if mode then modeerror(rv) end
+   local goldena = {}
+   local goldenb = {}
+   handle_simple_op(rv[2], goldena, goldenb)
    table.insert(code, {"RELE", goldena, goldenb})
    table.insert(code, {"DPOP"})
    table.insert(code, {"DPOP"})
@@ -395,17 +406,7 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
     local goldena = {}
     local goldenb = {}
     local lstate = {}
-    if simpleops[opn][2] then
-     handle_rval(code, rv[3], "getset", lstate)
-     table.insert(code, {"HOLD", goldena})
-     handle_rval(code, rv[4])
-     table.insert(code, {"HOLD", goldenb})
-    else
-     handle_rval(code, rv[4])
-     table.insert(code, {"HOLD", goldena})
-     handle_rval(code, rv[3], "getset", lstate)
-     table.insert(code, {"HOLD", goldenb})
-    end
+    handle_simple_op(opn, goldena, goldenb, lstate)
     table.insert(code, {"RELE", goldena, goldenb})
     table.insert(code, {"DPOP"})
     table.insert(code, {"DPOP"})
@@ -516,7 +517,7 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
 
  compilers["if"] = function (code, stmt, input_term)
   local labend = get_unique_label()
-  table.insert(code, {"SBCK"})
+  table.insert(code, {"STCK"})
   if input_term ~= 1 then
    handle_rval(code, stmt[2])
    table.insert(code, {"DPOP"})

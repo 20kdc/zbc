@@ -1,6 +1,20 @@
 -- I, 20kdc, release this file into the public domain.
 -- No warranty is provided, implied or otherwise.
 
+-- Should the PU command actually do it's job?
+-- (Disable for easier debugging, as it won't run the potentially erroring simulations.)
+local pu_run_simulations = true
+
+-- Should the PU command look far into the future to thus determine the absolute best configuration?
+-- Warning: This can increase CPU time used by the compiler by a lot,
+--  as a full run of the stack manager into the future is performed, and it doesn't actually remember the choices made right now.
+-- So it will end up being cpu_time_of_first_PU + (cpu_time_of_second_PU * 4) + (cpu_time_of_third_PU * 4 * 4)...
+-- If you are encountering errors on a PU, you should disable this,
+--  as the errors may be somewhere "inner".
+local pu_look_farfuture = false
+-- Debugging feature, annotates output code with information about AGET/ASET/etc.
+local blank_annotate = false
+
 -- Function code is written via a multi-stage process:
 -- 1. The function code is written with a wrapping assembly,
 --     used to drive the stack management routines.
@@ -20,6 +34,7 @@ aget_flow_breakers["BRKC"] = true
 aget_flow_breakers["FSTK"] = true
 aget_flow_breakers["STCK"] = true
 aget_flow_breakers["SBCK"] = true
+
 -- RSTK is safe because the stack will be reassembled with the AGET in mind.
 
 --    APTR: Pull the address of an automatic from pstk.
@@ -391,7 +406,7 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
    if v[1] == "AGET" then
     local ps, pos, stale = find_on_stack(pstk, tstk, v[2], lockautos[v[2]])
     if stale then
-     error("Auto " .. v[2] .. " has been lost.")
+     error("Auto " .. v[2] .. " has been lost. TSTK: " .. (#tstk) .. ", LOCK: " .. tostring(not not lockautos[v[2]]))
     end
     -- This should never happen if a locked auto is in use,
     --  but not a good reason to find out.
@@ -619,13 +634,7 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
     return
    end
    if v[1] == "PU" then
-    -- For now, just go with the first universe.
-    -- This will be properly implemented if/when the stack management system is properly refactored.
-    -- (NOTE: Other commands that are checking for optimization barriers
-    --   should look at all universes, as they are all possible by specification.)
-    local target = 2
-    -- a lot of lines
-    local targetlines = 0xFFFFFFF
+    -- This is a complicated command.
 
     local backlook = {}
     local bkv = lookahead()
@@ -634,40 +643,78 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
      bkv = lookahead()
     end
 
-    local function makelookahead(k, tgt)
+    local function makelookahead(ref, k, tgt)
      local pk = k
      local rk = 0
      return function ()
       pk = pk + 1
-      if not v[tgt][pk] then
+      if not tgt[pk] then
        rk = rk + 1
-       return backlook[rk]
+       return ref[rk]
       end
-      return v[tgt][pk]
+      return tgt[pk]
      end
     end
 
-    for i = 2, #v do
-     local l = 0
-     local ns = system.clone(function () l = l + 1 end)
-     for k, sv in ipairs(v[i]) do
-      ns.handle_sc(makelookahead(k, i), sv)
-     end
-     if l < targetlines then
-      target = i
-      targetlines = l
+    local target = 2
+    -- a lot of lines
+    local targetlines = 0xFFFFFFF
+    local targetinner = 0xFFFFFFF
+
+    -- Used to see if it was worth bothering to look deep into the future
+    local target_optinner = 2
+    local target_optinnerlines = 0xFFFFFFF
+
+    if pu_run_simulations then
+     local universe_debug = false
+     for i = 2, #v do
+      local l = 0
+      local li = 0
+      local ns = nil
+      local innercount = true
+       if universe_debug then
+       print("// PU ID " .. i)
+       ns = system.clone(function (s) l = l + 1 if innercount then li = li + 1 end print(s) end, true)
+      else
+       ns = system.clone(function (s) l = l + 1 if innercount then li = li + 1 end end, false)
+      end
+      local lookahead_prime = makelookahead(backlook, 0, v[i])
+      local lap_data = {}
+      local lkv = lookahead_prime()
+      while lkv do
+       table.insert(lap_data, lkv)
+       lkv = lookahead_prime()
+      end
+      for k, sv in ipairs(lap_data) do
+       if k > #(v[i]) then innercount = false end
+       if innercount or pu_look_farfuture then
+        ns.handle_sc(makelookahead({}, k, lap_data), sv)
+       end
+      end
+      if l < targetlines then
+       target = i
+       targetlines = l
+       targetinner = li
+      end
+      if li < target_optinnerlines then
+       target_optinner = i
+       target_optinnerlines = li
+      end
+      if universe_debug then print("// End Virtual Consideration") end
      end
     end
+    -- Worked out the best target, use it
     for k, sv in ipairs(v[target]) do
-     system.handle_sc(makelookahead(k, target), sv)
+     system.handle_sc(makelookahead(backlook, k, v[target]), sv)
     end
-    if annotate_fc then print("// [/PU (used U" .. (target - 1) .. "@" .. targetlines .. ")]") end
+    if annotate_fc then print("// [/PU (used U" .. (target - 1) .. "@" .. targetlines .. " lines, " .. targetinner .. " inner.)]") end
+    if annotate_fc and (target_optinner ~= target) then print("// The above PU was improved by far-future checks.") end
     return
    end
    error("cannot handle " .. v[1])
-  end, ["clone"] = function(printer)
+  end, ["clone"] = function(printer, annotate)
    local unpack = unpack or table.unpack
-   local r = cloner({pstk, tstk, envstk, breaking, instant, lastraw, global_last_was_im, false, autocount, lockautos})
+   local r = cloner({pstk, tstk, envstk, breaking, instant, lastraw, global_last_was_im, annotate, autocount, lockautos})
    r[#r + 1] = printer
    return create_stack_system(unpack(r))
   end, ["handle_fc"] = function (fc)
@@ -690,8 +737,6 @@ local function create_blank_stack_system(autocount, lockautos)
  local lastraw = false
  local global_last_was_im = false
 
- local annotate_fc = false
-
- return create_stack_system(pstk, tstk, envstk, breaking, instant, lastraw, global_last_was_im, annotate_fc, autocount, lockautos, print)
+ return create_stack_system(pstk, tstk, envstk, breaking, instant, lastraw, global_last_was_im, blank_annotate, autocount, lockautos, print)
 end
 return create_blank_stack_system

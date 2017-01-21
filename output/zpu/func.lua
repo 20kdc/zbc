@@ -237,6 +237,7 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
    table.insert(argholds, finalhold)
    -- dump everything in the right place on stack
    table.insert(code, argholds)
+   table.insert(code, {"RAW", "CALL"})
   else
    -- if it's an ID, risk setting everything up beforehand
    --  then putting the call address on top and re-sanity-checking,
@@ -244,17 +245,40 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
    -- (could save an extra instruction LOADSPing the call address
    --   that just got set up, and wasn't usable because of the stack layout)
    -- (note, this only helps anything because ID never burns stack)
-   local finalhold = {}
    table.insert(code, argholds)
-   local argholds2 = {}
-   for k, v in ipairs(argholds) do argholds2[k] = v end
-   handle_rval(code, rv[2])
-   table.insert(code, {"HOLD", finalhold})
-   table.insert(argholds2, finalhold)
-   table.insert(code, argholds2)
+
+   local can_relpc = false
+   if not likeautos[rv[2][2]] then
+    if externs[rv[2][2]] then
+     if not global_variables[rv[2][2]] then
+      can_relpc = true
+     end
+    end
+   end
+
+   if not can_relpc then
+    -- Handle the value, hold it, put it at the TOS of the absolute final RELE,
+    --  and then actually run the call.
+    handle_rval(code, rv[2])
+
+    local finalhold = {}
+    table.insert(code, {"HOLD", finalhold})
+
+    -- put call addr. on TOS
+    local argholds2 = {}
+    for k, v in ipairs(argholds) do argholds2[k] = v end
+    table.insert(argholds2, finalhold)
+    -- RELE
+    table.insert(code, argholds2)
+    -- actually run the call
+    table.insert(code, {"DPOP"})
+    table.insert(code, {"RAW", "CALL"})
+   else
+    -- absolutely 100% sure this is can be IMRELPC'd so completely avoid stack management
+    table.insert(code, {"IMPCREL", rv[2][2]})
+    table.insert(code, {"RAW", "CALLPCREL"})
+   end
   end
-  table.insert(code, {"DPOP"})
-  table.insert(code, {"RAW", "CALL"})
   table.insert(code, {"IST-"})
   if checkpoint_calls then
    table.insert(code, {"ETCK"})

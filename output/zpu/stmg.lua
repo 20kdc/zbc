@@ -296,7 +296,7 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
     table.remove(tstk, 1)
    end
    if not fake then
-    -- +1 is occupational hazard of using PUSHSPADD
+    -- +1 and the lack of a *4 is occupational hazard of using PUSHSPADD
     print("IM " .. (chks + 1))
     print("PUSHSPADD")
     print("POPSP")
@@ -583,7 +583,7 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
     if vp > 0 then
      if annotate_fc then print("// tstk " .. #tstk .. " ; ac " .. autocount) end
      if vp > 3 then
-      print("IM " .. (vp + 1)) -- +1 occupational hazard PUSHSPADD
+      print("IM " .. (vp + 1)) -- +1 and the lack of a *4 occupational hazard PUSHSPADD
       print("PUSHSPADD")
       print("POPSP")
      else
@@ -640,7 +640,7 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
     return
    end
    if v[1] == "APTR" then
-    -- The +1 is an occupational hazard of using PUSHSPADD rather than PUSHSP IM <num> ADD.
+    -- The +1 and the lack of a *4  is an occupational hazard of using PUSHSPADD rather than PUSHSP IM <num> ADD.
     print("IM " .. (((#tstk) + pstk[v[2]][1]) + 1))
     print("PUSHSPADD")
     global_last_was_im = false

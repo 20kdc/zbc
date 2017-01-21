@@ -86,7 +86,7 @@ local function handle_function(f)
   table.insert(autos, k)
  end
  local fincode = {
-  {"IM", tostring(1 - #autos)},
+  {"IM", tostring(1 - #autos)}, -- NOTE: PUSHSPADD does an implicit *4
   {"RAW", "PUSHSPADD"},
   {"RAW", "POPSP"}
  }

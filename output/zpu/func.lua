@@ -641,21 +641,22 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
  -- This needs termination work
  compilers["switch"] = function (code, stmt, input_term)
   -- This'll be a fun one, I'm sure.
-  local bk_cas = switch_unique_cases
-  local bk_def = switch_unique_default
-  -- Actually run switch
-  switch_unique_cases = {}
   local labend = get_unique_label()
-  switch_unique_default = labend
   table.insert(code, {"SBCK"})
 
   handle_rval(code, stmt[2])
 
-  local tempcode = {}
+  -- Setup env.
+  local bk_cas = switch_unique_cases
+  local bk_def = switch_unique_default
   local bk_brk = current_break_label
+  switch_unique_cases = {}
+  switch_unique_default = labend
   current_break_label = labend
+  --
+
+  local tempcode = {}
   local term = handle_stmt(tempcode, stmt[3], 1)
-  current_break_label = bk_brk
 
   -- Order of handling is consistent enough.
   -- For now, the rvalue result just sticks around.
@@ -687,13 +688,17 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
   for _, v in ipairs(tempcode) do
    table.insert(code, v)
   end
-  if term == -1 then
+  if term == 1 then
    table.insert(code, {"TTCK"})
+  else
+   table.insert(code, {"ETCK"})
   end
   table.insert(code, {"RAW", labend .. ":"})
   --
   switch_unique_cases = bk_cas
   switch_unique_default = bk_def
+  current_break_label = bk_brk
+  --
   return -1
  end
 

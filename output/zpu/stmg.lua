@@ -13,7 +13,7 @@ local pu_run_simulations = true
 --  as the errors may be somewhere "inner".
 local pu_look_farfuture = false
 -- Debugging feature, annotates output code with information about AGET/ASET/etc.
-local blank_annotate = false
+local blank_annotate = true
 
 -- Function code is written via a multi-stage process:
 -- 1. The function code is written with a wrapping assembly,
@@ -747,6 +747,10 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
      pk = pk + 1
      return fc[pk]
     end, v)
+   end
+  end, ["ensure_safe_termination"] = function ()
+   if #envstk > 0 then
+    error("Left-over environment stack")
    end
   end}
  return system

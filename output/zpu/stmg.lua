@@ -130,10 +130,11 @@ aget_flow_breakers["SBCK"] = true
 -- IMPCREL .L.2
 -- RAW EQBRANCH
 --  <run code>
--- ETCK
+-- BRKC
 -- IMPCREL .L.1
 -- RAW POPPCREL
 -- RAW .L.2:
+-- ETCK
 
 -- 'break':
 -- BRKC
@@ -401,6 +402,28 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
      nstk[k] = v
     end
     tstk = nstk
+    return
+   end
+   if v[1] == "RSTK" then
+    -- FSTK was just called. You have A SHORT AMOUNT OF TIME to rebuild the stack.
+    -- What do you do?
+    -- (NOTE: RSTK is inefficient because it's rebuilding the stack under ridiculous conditions.
+    --        This is why anything resembling a GOTO is a pain to work with for compilers.
+    --        I suggest avoiding GOTO.)
+    for i = 1, #tstk do
+     local ri = (#tstk + 1) - i
+     local rv = tstk[i]
+     local vstk = {}
+     if rv == "" then
+      print("PUSHSP")
+     else
+      -- Note: The "stale" flag is ignored since it's the stack flusher's job to fix that.
+      -- However, it can't be explicitly turned off since it's conditional if RSTK runs or not.
+      local ps, pos, stale = find_on_stack(pstk, vstk, rv, lockautos[rv])
+      print("LOADSP " .. pos)
+     end
+     table.insert(vstk, 1, rv)
+    end
     return
    end
    if v[1] == "AGET" then

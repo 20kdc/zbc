@@ -9,12 +9,61 @@ local checkpoint_calls = false
 -- This is false for now, as some not easily resolved issues mean
 --  that autos get stored even when unneeded at checkpoint boundaries.
 local checkpoint_all_compounds = false
+
+-- The Specification On Internal Autos & Such:
+-- @<lua module name>@<internal variable name, creator-defined>
+-- This format should be used by optimization passes that want to add stuff.
+
+-- What's missing:
+--  + missing operators, particularly unary ops ++ and --
+--    (practically a nice break after dealing with switch)
+--    also trinary op, but it's not a major issue
+--  + auto vectors
+--    (shouldn't be too difficult,
+--     just add a way to indicate how much "vector room" is needed.
+--     this can be considered part of PSTK space.
+--     by putting in internal autos into those points,
+--      marking them as locked & such,
+--      it should be easy enough to set the pointers using APTR & ASET.)
+--  + *the moment auto vectors are implemented, get the LOADSP/STORESP refactoring in the stack management code happening.*
+--  + make access to LOADB/STOREB/LOADH/STOREH happen
+--     (using "fake library functions" which don't need to get extrn'd.
+--       allows some violation of spec but... whatever.)
+--  + refactor some of cnsteval's code into "astwalker" module
+--    (this should speed up writing future passes)
+--  + some optimization of switch/case if at all possible
+--    (do this at the AST transform level to simply things.
+--     basically, *avoid the GOTO-like system when possible*,
+--     unless a switch-table is usable, in which case stick with it.
+--     ...and do this all in one optimization pass.)
+--  + optimize GOTO to constant labels (very low priority)
+--  + misc. AST optimization passes (ex. rvalue deduplication)
+
+--  + more backends (...announce on apr.1st. not happening.)
+
 return function (args, stmt, autos, lockautos, externs, global_variables, get_unique_label, gen_words, str_term)
  local astlib = require("ast")
  local likeautos = {}
  for _, v in ipairs(args) do
   likeautos[v] = true
  end
+
+ local declared_labels = {}
+ local declared_labels_need_resolution = {}
+ local function get_label(name)
+  if declared_labels[name] then
+   return declared_labels[name]
+  end
+  declared_labels[name] = get_unique_label()
+  declared_labels_need_resolution[name] = true
+ end
+
+ -- Used by "switch" to map integers to case labels.
+ local switch_unique_cases = nil
+ local switch_unique_default = nil
+
+ local current_break_label = nil
+
  -- args: codeTbl, stmt, input_term
  -- returns: termination setting
  -- terminating flags from this can be:
@@ -61,7 +110,7 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
   --  in the same function, then just rename the auto.
   if not likeautos[rv[2]] then
    if not externs[rv[2]] then
-    error("Unknown ID " .. rv[2] .. " @ " .. rv[3])
+    return get_label(rv[2])
    else
     -- no matter what, this is always first
     table.insert(code, {"IM", rv[2]})
@@ -504,32 +553,209 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
   table.insert(code, {"DPOP"})
   table.insert(code, {"IMPCREL", labend})
   table.insert(code, {"RAW", "EQBRANCH"})
+
+  local ocbl = current_break_label
+  current_break_label = labend
   handle_stmt(code, stmt[3], -1)
-  table.insert(code, {"ETCK"})
+  current_break_label = ocbl
+
+  table.insert(code, {"BRKC"})
   table.insert(code, {"IMPCREL", lab})
   table.insert(code, {"RAW", "POPPCREL"})
   table.insert(code, {"RAW", labend .. ":"})
+  table.insert(code, {"ETCK"})
   -- If it terminates in the body, it *may* terminate,
   -- if it will not terminate, it may not terminate.
   -- If that makes sense.
+  -- (Also, a break counts as terminating. Could fail.)
   return -1
  end
 
  compilers["if"] = function (code, stmt, input_term)
   local labend = get_unique_label()
-  table.insert(code, {"STCK"})
   if input_term ~= 1 then
    handle_rval(code, stmt[2])
    table.insert(code, {"DPOP"})
    table.insert(code, {"IMPCREL", labend})
    table.insert(code, {"RAW", "EQBRANCH"})
   end
+  table.insert(code, {"STCK"})
   local tm = handle_stmt(code, stmt[3], input_term)
   table.insert(code, {"ETCK"})
   if input_term ~= 1 then
    table.insert(code, {"RAW", labend .. ":"})
   end
+  -- If it's terminating, it MAY be terminating,
+  --  if it's explicitly nonterminating, it will always be so.
+  if tm == 1 then tm = 0 end
   return tm
+ end
+
+ -- This needs termination work
+ compilers["if_else"] = function (code, stmt, input_term)
+  local labend = get_unique_label()
+  local labelse = get_unique_label()
+  if input_term ~= 1 then
+   handle_rval(code, stmt[2])
+   table.insert(code, {"DPOP"})
+   table.insert(code, {"IMPCREL", labelse})
+   table.insert(code, {"RAW", "EQBRANCH"})
+  end
+  table.insert(code, {"STCK"})
+  handle_stmt(code, stmt[3], input_term)
+  table.insert(code, {"ETCK"})
+  table.insert(code, {"IMPCREL", labend})
+  table.insert(code, {"RAW", "POPPCREL"})
+  table.insert(code, {"RAW", labelse .. ":"})
+  table.insert(code, {"STCK"})
+  handle_stmt(code, stmt[4], input_term)
+  table.insert(code, {"ETCK"})
+  table.insert(code, {"RAW", labend .. ":"})
+  return -1
+ end
+
+ -- This needs termination work
+ compilers["switch"] = function (code, stmt, input_term)
+  -- This'll be a fun one, I'm sure.
+  local bk_cas = switch_unique_cases
+  local bk_def = switch_unique_default
+  -- Actually run switch
+  switch_unique_cases = {}
+  local labend = get_unique_label()
+  switch_unique_default = labend
+  table.insert(code, {"SBCK"})
+
+  handle_rval(code, stmt[2])
+
+  local tempcode = {}
+  local bk_brk = current_break_label
+  current_break_label = labend
+  local term = handle_stmt(tempcode, stmt[3], 1)
+  current_break_label = bk_brk
+
+  -- Order of handling is consistent enough.
+  -- For now, the rvalue result just sticks around.
+
+  for kc, v in pairs(switch_unique_cases) do
+   table.insert(code, {"RAW", "LOADSP 0"})
+   if kc ~= 0 then
+    table.insert(code, {"IM", kc})
+    table.insert(code, {"RAW", "SUB"})
+   end
+
+   local lbl = get_unique_label()
+   table.insert(code, {"IMPCREL", lbl})
+   table.insert(code, {"RAW", "NEQBRANCH"})
+   table.insert(code, {"FSTK"})
+   table.insert(code, {"IMPCREL", v})
+   table.insert(code, {"RAW", "POPPCREL"})
+   table.insert(code, {"RAW", lbl .. ":"})
+  end
+
+  if switch_unique_default ~= labend then
+   table.insert(code, {"FSTK"})
+  else
+   table.insert(code, {"BRKC"})
+  end
+  table.insert(code, {"IMPCREL", switch_unique_default})
+  table.insert(code, {"RAW", "POPPCREL"})
+
+  for _, v in ipairs(tempcode) do
+   table.insert(code, v)
+  end
+  if term == -1 then
+   table.insert(code, {"TTCK"})
+  end
+  table.insert(code, {"RAW", labend .. ":"})
+  --
+  switch_unique_cases = bk_cas
+  switch_unique_default = bk_def
+  return -1
+ end
+
+ function compilers.case(code, stmt, input_term)
+  table.insert(code, {"STCK"})
+  local caseA = get_unique_label()
+  local caseB = get_unique_label()
+  if stmt[2][1] ~= "int" then
+   error("Case constant not int @ " .. stmt[2][#stmt[2]])
+  end
+  if input_term ~= 1 then
+   table.insert(code, {"IMPCREL", caseB})
+   table.insert(code, {"RAW", "POPPCREL"})
+  end
+  table.insert(code, {"RAW", caseA .. ":"})
+  table.insert(code, {"RSTK"})
+  table.insert(code, {"RAW", caseB .. ":"})
+  table.insert(code, {"ETCK"})
+  switch_unique_cases[astlib.parse_int(stmt[2][2])] = caseA
+  local tm = -1
+  if handle_stmt(code, stmt[3], -1) == 1 then
+   tm = 1
+  end
+  return tm
+ end
+ function compilers.label(code, stmt, input_term)
+  local caseA = get_unique_label()
+  local caseB = get_unique_label()
+
+  table.insert(code, {"STCK"})
+  if input_term ~= 1 then
+   table.insert(code, {"IMPCREL", caseB})
+   table.insert(code, {"RAW", "POPPCREL"})
+  end
+
+  -- Work out what kind of label this is,
+  --  and either replace something else with a generated label,
+  --  or replace the generated label with something else.
+  if stmt[2] == "default" then
+   if not switch_unique_default then
+    error("Default outside switch @ " .. stmt[3])
+   end
+   switch_unique_default = caseA
+  else
+   caseA = get_label(stmt[2])
+   declared_labels_need_resolution[stmt[2]] = nil
+  end
+
+  table.insert(code, {"RAW", caseA .. ":"})
+  table.insert(code, {"RSTK"})
+  table.insert(code, {"RAW", caseB .. ":"})
+  table.insert(code, {"ETCK"})
+
+  local tm = -1
+  if handle_stmt(code, stmt[3], -1) == 1 then
+   tm = 1
+  end
+  return tm
+ end
+
+ compilers["break"] = function (code, stmt, input_term)
+  if input_term ~= 1 then
+   if not current_break_label then
+    error("Break @ " .. stmt[2] .. " not in any breakable block")
+   end
+   table.insert(code, {"BRKC"})
+   table.insert(code, {"IMPCREL", current_break_label})
+   table.insert(code, {"RAW", "POPPCREL"})
+  end
+  return 1
+ end
+
+ compilers["goto"] = function (code, stmt, input_term)
+  if input_term ~= 1 then
+   -- hidden auto used solely for this operation. :(
+   -- *avoid operations which can jump about* if you want performance.
+   autos["@outputs.zpu.func@goto_var"] = true
+   lockautos["@outputs.zpu.func@goto_var"] = true
+   handle_rval(code, stmt[2])
+   table.insert(code, {"ASET", "@outputs.zpu.func@goto_var"})
+   table.insert(code, {"FSTK"}) -- known to zero tstk.
+   table.insert(code, {"AGET", "@outputs.zpu.func@goto_var"}) -- #tstk == 1
+   table.insert(code, {"DPOP"}) -- #tstk == 0
+   table.insert(code, {"RAW", "POPPC"}) -- and this operation makes it happen
+  end
+  return 1
  end
 
  function compilers.extrn(code, stmt, input_term)
@@ -552,5 +778,12 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
 
  local fc = {}
  local ft = handle_stmt(fc, stmt, -1)
+
+ for k, v in pairs(declared_labels_need_resolution) do
+  if v then
+   error("Label " .. k .. " went undeclared.")
+  end
+ end
+
  return fc, ft == 1
 end

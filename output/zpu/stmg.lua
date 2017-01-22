@@ -20,6 +20,13 @@ local blank_annotate = true
 --     used to drive the stack management routines.
 --    The available instructions are:
 --    IM: May as well be RAW, "IM <arg>" if not for the automatic NOP insertion.
+--    IMPCREL: see IM
+--    RAW: Raw ZPU assembly. Will turn off the IM concatenation prevention flag.
+--    RAWLB: Raw ZPU assembly. Will turn off the IM concatenation prevention flag,
+--                              but prepends a NOP before the RAW to do so (so the NOP stays outside of loops)
+--    AUTO: Assign pstk variable. (stale)
+--    ARG: Assign pstk variable. (not stale)
+--    
 --    AGET: Pull an automatic.
 --          This may or may not alter stack.
 --          Some instructions are "flow breakers",
@@ -30,10 +37,16 @@ local blank_annotate = true
 --           this is one of the things which may be critical to fixing the issue.
 --          The instructions marked as "flow breakers" are:
 local aget_flow_breakers = {}
-aget_flow_breakers["BRKC"] = true
+
 aget_flow_breakers["FSTK"] = true
+aget_flow_breakers["BRKC"] = true
+aget_flow_breakers["RSTK"] = true
+
 aget_flow_breakers["STCK"] = true
 aget_flow_breakers["SBCK"] = true
+
+aget_flow_breakers["ETCK"] = true
+aget_flow_breakers["TTCK"] = true
 
 -- RSTK is safe because the stack will be reassembled with the AGET in mind.
 
@@ -60,9 +73,6 @@ aget_flow_breakers["SBCK"] = true
 --    ETCK: Write code to return to stack checkpoint,
 --           and exit the stack checkpoint.
 --    TTCK: ETCK, but without writing code.
---    RAW: Raw ZPU assembly.
---    AUTO: Assign pstk variable. (stale)
---    ARG: Assign pstk variable. (not stale)
 --    HOLD: Put the current length of the temporary stack into cmd[2][1].
 --    RELE: The arguments to this are "cmd[2]" objects passed to HOLD, from BOS to TOS.
 --          This will ensure the stack layout is correct, *potentially* generating stack objects in the process.
@@ -73,6 +83,10 @@ aget_flow_breakers["SBCK"] = true
 --         and it will write out the more efficient path.
 --        Useful when the code's only difference is the ordering of things.
 --        (Was really annoying to implement.)
+
+--    IM/IMPCREL: Used for automatic insertion of NOPs where needed.
+--                (NOTE: These do not count from a stack-management perspective,
+--                       just assume you wrote RAW IM/RAW IMPCREL, only it adds a NOP if needed.)
 
 -- The general point of this is that if stack accesses are well-timed,
 --  a situation like:
@@ -123,17 +137,20 @@ aget_flow_breakers["SBCK"] = true
 -- RAW .L.2:
 
 -- 'while':
+-- Note the two-container strategy used to ensure no actual 'conditional' stuff happens
 -- RAW .L.1:
 -- SBCK
--- <condition code>
+-- <condition code> <-- CANNOT safely break!
 -- DPOP
 -- IMPCREL .L.2
 -- RAW EQBRANCH
+-- SBCK
 --  <run code>
+-- ETCK
 -- BRKC
 -- IMPCREL .L.1
 -- RAW POPPCREL
--- RAW .L.2:
+-- RAW .L.2: <-- Break in while does a BRKC (taking it out of the inner code container) and jumps here for conditional code cleanup
 -- ETCK
 
 -- 'break':
@@ -239,14 +256,17 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
   end
   local heavyduty = #tstk > 6
   for i = 1, chks do
+   local k = 1
    local v = tstk[1]
    if heavyduty then
+    k = i
     v = tstk[i]
    end
    if v ~= "" then
     -- Important thing
     local pv, ofs, st = find_on_stack(pstk, chkp, v)
-    ofs = ofs + (4 * (#tstk - #chkp))
+    local chksC = (#tstk - #chkp)
+    ofs = ofs + (4 * chksC)
     local dofs = math.floor(ofs / 4) + 1
     -- if it's already fine on this stack, don't bother
     if tstk[dofs] ~= v then
@@ -258,6 +278,7 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
       ofs = ofs + 4
      end
      if not fake then
+      --print("// Factors " .. chksC .. ";" .. dofs .. ";" .. tostring(pv))
       print("STORESP " .. ofs)
       global_last_was_im = false
      end
@@ -265,8 +286,11 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
       -- No longer stale.
       pstk[v][2] = false
      else
-      if chkp[dofs - chks] ~= v then error("consistency failure") end
+      if chkp[dofs - chksC] ~= v then error("consistency failure") end
       tstk[dofs] = v
+      --if not fake then
+      -- print("// CHECKME, " .. dofs .. " wanted, " .. (dofs - chksC) .. " tIdx, " .. chkp[dofs - chksC])
+      --end
      end
     else
      -- can be discarded
@@ -287,17 +311,22 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
     end
    end
    if not heavyduty then
+    -- Here all cases result in the first entry being removed
     table.remove(tstk, 1)
    end
   end
   -- commence flush
-  if heavyduty then
+  local chksCF = (#tstk - #chkp)
+  if chksCF > 0 then
+   if not heavyduty then
+    error("Stack not being managed properly?")
+   end
    while #tstk > #chkp do
     table.remove(tstk, 1)
    end
    if not fake then
     -- +1 and the lack of a *4 is occupational hazard of using PUSHSPADD
-    print("IM " .. (chks + 1))
+    print("IM " .. (chksCF + 1))
     print("PUSHSPADD")
     print("POPSP")
     global_last_was_im = false
@@ -316,7 +345,7 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
  local function clean_duplicates()
   local seen = {}
   for k, v in ipairs(tstk) do
-  if v ~= "" then
+   if v ~= "" then
     if seen[v] then
      tstk[k] = ""
     end
@@ -344,6 +373,18 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
     lastraw = false
     return
    end
+   if v[1] == "RAWLB" then
+    if (not lastraw) and annotate_fc then
+     print("// RAWLB:")
+    end
+    if global_last_was_im then
+     print("NOP")
+    end
+    print(v[2])
+    global_last_was_im = false
+    lastraw = true
+    return
+   end
    if v[1] == "RAW" then
     if (not lastraw) and annotate_fc then
      print("// RAW:")
@@ -354,13 +395,15 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
     return
    end
    lastraw = false
-   if annotate_fc then print("// " .. (#tstk) .. " " .. v[1]) end
+   if annotate_fc then print("// " .. (#tstk) .. " " .. tostring(global_last_was_im) .. " " .. v[1]) end
    if v[1] == "ARG" then
     pstk[v[2]] = {v[3], false}
+    if annotate_fc then print("// " .. v[2] .. "@" .. v[3]) end
     return
    end
    if v[1] == "AUTO" then
     pstk[v[2]] = {v[3], true}
+    if annotate_fc then print("// " .. v[2] .. "@" .. v[3]) end
     return
    end
    if v[1] == "STCK" then
@@ -412,7 +455,7 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
     --        I suggest avoiding GOTO.)
     for i = 1, #tstk do
      local ri = (#tstk + 1) - i
-     local rv = tstk[i]
+     local rv = tstk[ri]
      local vstk = {}
      if rv == "" then
       print("PUSHSP")
@@ -422,6 +465,7 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
       local ps, pos, stale = find_on_stack(pstk, vstk, rv, lockautos[rv])
       print("LOADSP " .. pos)
      end
+     global_last_was_im = false
      table.insert(vstk, 1, rv)
     end
     return
@@ -434,7 +478,13 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
     -- This should never happen if a locked auto is in use,
     --  but not a good reason to find out.
     if (not ps) and (not lockautos[v[2]]) then
-     if pos == 0 then
+     local barecheck = false
+     if envstk[1] then
+      if #tstk == #(envstk[1][1]) then
+       barecheck = true
+      end
+     end
+     if (pos == 0) and not barecheck then
       local function canopt()
        local w = "// OPTTRACE:"
        local t = lookahead()
@@ -574,6 +624,9 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
    end
    if (v[1] == "RETV") or (v[1] == "RETN") then
     if v[1] == "RETN" then
+     if global_last_was_im then
+      print("NOP")
+     end
      print("IM _memreg")
      print("STORE")
      global_last_was_im = false
@@ -583,6 +636,9 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
     if vp > 0 then
      if annotate_fc then print("// tstk " .. #tstk .. " ; ac " .. autocount) end
      if vp > 3 then
+      if global_last_was_im then
+       print("NOP")
+      end
       print("IM " .. (vp + 1)) -- +1 and the lack of a *4 occupational hazard PUSHSPADD
       print("PUSHSPADD")
       print("POPSP")

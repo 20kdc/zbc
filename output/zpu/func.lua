@@ -36,6 +36,8 @@ local checkpoint_all_compounds = false
 --     basically, *avoid the GOTO-like system when possible*,
 --     unless a switch-table is usable, in which case stick with it.
 --     ...and do this all in one optimization pass.)
+--  + while (1) handling in handle_inv_conditional
+--     (easy but very low priority as inf. loops are generally not perf-crit)
 --  + optimize GOTO to constant labels (very low priority)
 --  + misc. AST optimization passes (ex. rvalue deduplication)
 
@@ -99,6 +101,31 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
 
  local function modeerror(rv)
   error("Unsupported mode for " .. rv[1] .. " @ " .. rv[#rv])
+ end
+
+ -- Conditional helper --
+
+ -- returns r, always.
+ -- r is the RAW to use for the actual branch (must accept relative)
+ -- always is used by while to determine if this is a while (1) or similar
+ local function handle_inv_conditional(code, rv)
+  while rv[1] == "arglist(" do
+   if #rv[2] ~= 1 then error("Wrapper @ " .. rv[3] .. " had !=1 param.") end
+   rv = rv[2][1]
+  end
+  if rv[1] == "puop" then
+   if rv[2] == "!" then
+    if not rv[4] then
+     -- Special exception.
+     handle_rval(code, rv[3])
+     table.insert(code, {"DPOP"})
+     return "NEQBRANCH", false
+    end
+   end
+  end
+  handle_rval(code, rv)
+  table.insert(code, {"DPOP"})
+  return "EQBRANCH", false
  end
 
  -- RVAL COMPILERS --
@@ -330,6 +357,33 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
    table.insert(code, {"DTMP"})
    return
   end
+  if (rv[2] == "++") or (rv[2] == "--") then
+   local top = "SUB"
+   if rv[2] == "++" then
+    top = "ADD"
+   end
+   local st = {}
+   handle_rval(code, rv[3], "getset", st)
+   -- since getset is defined to keep the state as burned stack,
+   --  and *NOT* the top-most value, things are fine! * maybe
+   if rv[4] then
+    -- operation happens afterwards
+    table.insert(code, {"RAW", "LOADSP 0"})
+    table.insert(code, {"IM", "1"})
+    table.insert(code, {"RAW", top})
+    table.insert(code, {"DTMP"})
+   else
+    -- operation happens beforehand
+    table.insert(code, {"DPOP"})
+    table.insert(code, {"IM", "1"})
+    table.insert(code, {"RAW", top})
+    table.insert(code, {"DTMP"})
+    table.insert(code, {"RAW", "LOADSP 0"})
+    table.insert(code, {"DTMP"})
+   end
+   handle_rval(code, rv[3], "set", st)
+   return
+  end
   if not rv[4] then
    if rv[2] == "&" then
     if mode then modeerror(rv) end
@@ -380,7 +434,7 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
   -- false: Pop A first. true: Pop B first.
   -- Notably symmetric ops *should* default to true in implementation.
   simpleops["+"] = oph_simple(code, "ADD", "symmetric")
-  simpleops["*"] = oph_simple(code, "SLOWMULT", "symmetric")
+  simpleops["*"] = oph_simple(code, "MULT", "symmetric")
 
   simpleops["&"] = oph_simple(code, "AND", "symmetric")
   simpleops["|"] = oph_simple(code, "OR", "symmetric")
@@ -571,22 +625,24 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
   -- Currently while loops are just always non-terminating.
   local lab = get_unique_label()
   local labend = get_unique_label()
-  table.insert(code, {"RAW", lab .. ":"})
+  table.insert(code, {"RAWLB", lab .. ":"})
   table.insert(code, {"SBCK"})
   handle_rval(code, stmt[2])
   table.insert(code, {"DPOP"})
   table.insert(code, {"IMPCREL", labend})
   table.insert(code, {"RAW", "EQBRANCH"})
+  table.insert(code, {"SBCK"})
 
   local ocbl = current_break_label
   current_break_label = labend
   handle_stmt(code, stmt[3], -1)
   current_break_label = ocbl
 
+  table.insert(code, {"ETCK"})
   table.insert(code, {"BRKC"})
   table.insert(code, {"IMPCREL", lab})
   table.insert(code, {"RAW", "POPPCREL"})
-  table.insert(code, {"RAW", labend .. ":"})
+  table.insert(code, {"RAWLB", labend .. ":"})
   table.insert(code, {"ETCK"})
   -- If it terminates in the body, it *may* terminate,
   -- if it will not terminate, it may not terminate.
@@ -598,16 +654,15 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
  compilers["if"] = function (code, stmt, input_term)
   local labend = get_unique_label()
   if input_term ~= 1 then
-   handle_rval(code, stmt[2])
-   table.insert(code, {"DPOP"})
+   local r, always = handle_inv_conditional(code, stmt[2])
    table.insert(code, {"IMPCREL", labend})
-   table.insert(code, {"RAW", "EQBRANCH"})
+   table.insert(code, {"RAW", r})
   end
   table.insert(code, {"STCK"})
   local tm = handle_stmt(code, stmt[3], input_term)
   table.insert(code, {"ETCK"})
   if input_term ~= 1 then
-   table.insert(code, {"RAW", labend .. ":"})
+   table.insert(code, {"RAWLB", labend .. ":"})
   end
   -- If it's terminating, it MAY be terminating,
   --  if it's explicitly nonterminating, it will always be so.
@@ -620,21 +675,20 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
   local labend = get_unique_label()
   local labelse = get_unique_label()
   if input_term ~= 1 then
-   handle_rval(code, stmt[2])
-   table.insert(code, {"DPOP"})
+   local r, always = handle_inv_conditional(code, stmt[2])
    table.insert(code, {"IMPCREL", labelse})
-   table.insert(code, {"RAW", "EQBRANCH"})
+   table.insert(code, {"RAW", r})
   end
   table.insert(code, {"STCK"})
   handle_stmt(code, stmt[3], input_term)
   table.insert(code, {"ETCK"})
   table.insert(code, {"IMPCREL", labend})
   table.insert(code, {"RAW", "POPPCREL"})
-  table.insert(code, {"RAW", labelse .. ":"})
+  table.insert(code, {"RAWLB", labelse .. ":"})
   table.insert(code, {"STCK"})
   handle_stmt(code, stmt[4], input_term)
   table.insert(code, {"ETCK"})
-  table.insert(code, {"RAW", labend .. ":"})
+  table.insert(code, {"RAWLB", labend .. ":"})
   return -1
  end
 
@@ -674,7 +728,7 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
    table.insert(code, {"FSTK"})
    table.insert(code, {"IMPCREL", v})
    table.insert(code, {"RAW", "POPPCREL"})
-   table.insert(code, {"RAW", lbl .. ":"})
+   table.insert(code, {"RAWLB", lbl .. ":"})
   end
 
   if switch_unique_default ~= labend then
@@ -693,7 +747,7 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
   else
    table.insert(code, {"ETCK"})
   end
-  table.insert(code, {"RAW", labend .. ":"})
+  table.insert(code, {"RAWLB", labend .. ":"})
   --
   switch_unique_cases = bk_cas
   switch_unique_default = bk_def
@@ -713,9 +767,9 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
    table.insert(code, {"IMPCREL", caseB})
    table.insert(code, {"RAW", "POPPCREL"})
   end
-  table.insert(code, {"RAW", caseA .. ":"})
+  table.insert(code, {"RAWLB", caseA .. ":"})
   table.insert(code, {"RSTK"})
-  table.insert(code, {"RAW", caseB .. ":"})
+  table.insert(code, {"RAWLB", caseB .. ":"})
   table.insert(code, {"ETCK"})
   switch_unique_cases[astlib.parse_int(stmt[2][2])] = caseA
   local tm = -1
@@ -747,9 +801,9 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
    declared_labels_need_resolution[stmt[2]] = nil
   end
 
-  table.insert(code, {"RAW", caseA .. ":"})
+  table.insert(code, {"RAWLB", caseA .. ":"})
   table.insert(code, {"RSTK"})
-  table.insert(code, {"RAW", caseB .. ":"})
+  table.insert(code, {"RAWLB", caseB .. ":"})
   table.insert(code, {"ETCK"})
 
   local tm = -1

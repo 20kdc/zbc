@@ -811,7 +811,7 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
   end}
  return system
 end
-local function create_blank_stack_system(autocount, lockautos)
+local function create_blank_stack_system(autocount, lockautos, printer)
  local pstk = {}
  local tstk = {}
  local envstk = {}
@@ -820,6 +820,6 @@ local function create_blank_stack_system(autocount, lockautos)
  local lastraw = false
  local global_last_was_im = false
 
- return create_stack_system(pstk, tstk, envstk, breaking, instant, lastraw, global_last_was_im, blank_annotate, autocount, lockautos, print)
+ return create_stack_system(pstk, tstk, envstk, breaking, instant, lastraw, global_last_was_im, blank_annotate, autocount, lockautos, printer)
 end
 return create_blank_stack_system

@@ -61,7 +61,7 @@
 -- This is for the case where the length is known and must be the whole input.
 
 -- Expression parsing is complicated by itself
-local par_expr = require("par_expr")
+local par_expr = require("core.par.expr")
 
 local park_arglist = nil
 
@@ -418,7 +418,7 @@ local function par_declaration(tokens)
   return tokens:sub(es + 1), park_decl_inner(tokens:sub(2, es - 1), id, idl)
  end
 end
-return function (tokens)
+return {["run"] = function (tokens)
  local declarations = {}
  while #tokens > 0 do
   local decl = nil
@@ -426,4 +426,4 @@ return function (tokens)
   table.insert(declarations, decl)
  end
  return declarations
-end
+end, ["input"] = "tokenlist", ["output"] = "ast"}

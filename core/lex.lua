@@ -117,7 +117,7 @@ local function trymatch(str)
  end
 end
 
-return function (str)
+return {["run"] = function (str, args)
  local line = 1
  local tbl = {}
  while str:len() > 0 do
@@ -139,4 +139,4 @@ return function (str)
   end
  end
  return tbl
-end
+end, ["input"] = "string", ["output"] = "tokenlist"}

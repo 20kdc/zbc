@@ -2,12 +2,21 @@
 -- No warranty is provided, implied or otherwise.
 
 -- ZBC. A B compiler for the modern world. (Maybe.)
+-- This is just the "driver" program.
+-- It takes an input,
+--  interprets it in whatever format a pass expects,
+--  runs that pass on it,
+--  then spits out an output.
+-- For ZPU work, if you prefer a long form, use:
+-- zbc.lua core.lex < input.b > work.tkn
+-- zbc.lua core.par < work.tkn > work.ast
+-- zbc.lua pass.consteval -DWORD_CHARS 4 -DWORD_VALS 4 -I -C -B < work.ast > work2.ast
+-- zbc.lua output.zpu < work2.ast > out.S
+--  or the following single line:
+-- zbc.lua core.lex -- core.par -- cnsteval -DWORD_CHARS 4 -DWORD_VALS 4 -I -C -B -- output.zpu < input.b > out.S
 
-local s = io.stdin:read("*a")
+local args = {...}
 
-local lex = require("lex")
--- All the tokens go in here.
-local alltokens = lex(s)
 local tokenSubset = nil
 tokenSubset = function (tokens, first, last)
  last = last or (#tokens)
@@ -69,70 +78,93 @@ tokenSubset = function (tokens, first, last)
  ts.len = function (self) return len end
  return ts
 end
-local tokens = tokenSubset(alltokens, 1, #alltokens)
-
--- leave this in global for debugging purposes.
-dump = function (obj, indent)
- indent = indent or 1
- local ispc = string.rep(" ", indent)
- if type(obj) == "table" then
-  local b = "{\n" .. ispc
-  local newline = false
-  for k, v in pairs(obj) do
-   if newline then
-    b = b .. ",\n" .. ispc
-   end
-   b = b .. "[" .. dump(k, indent + 1) .. "] = " .. dump(v, indent + 1)
-   newline = true
-  end
-  return b .. "}"
- else
-  return tostring(obj)
- end
-end
-
-local par = require("par")
-local ast = par(tokens)
-
--- The guide to the base AST format.
--- This is a binary format when it comes down to it,
---  because strings may contain newlines in the source file that carry,
---  but a lot of padding exists for readability :)
--- Essentially, any object starts with a line.
--- A line is always terminated by 0x0A or 0x08. (aka "\n" and "\t")
--- A line MAY NOT be terminated by any other system,
---  including extensions like 0x0D 0x0A, as allowing this
---  would allow people to screw up their file output by accident,
---  and that would probably cause the aforementioned newlines case to fail.
-
--- All 0x20 bytes can be safely removed from a line.
--- It is safe to use a whitespace-trimming function to achieve this.
-
--- The first byte in a line specifies the type.
--- The rest of the data in that line is specific to that object type,
---  and immediately after the line ends, a binary blob may exist.
-
--- There are only 4 object types.
--- { : Table. Further objects will be values.
---     No valid AST tables contain value holes,
---      or non-numeric keys.
--- } : Nil. If used as a table value, that ends the table.
--- % : Number. The main body of the line is the number.
--- $ : String. The main body of the line is the number of bytes in the text.
---             Immediately following is that amount of bytes,
---              plus an additional newline.
--- Y : Yes.
--- N : No.
-
--- There is also:
--- : : Comment. Read in another object to take it's place.
 
 local astlib = require("ast")
--- give enough information in the file that someone can decode the format
---  properly, without shipping an entire specification in every AST.
-io.stdout:write(": ZBC AST\n")
-io.stdout:write(": This is a binary file - treat it as such.\n")
-io.stdout:write(": (Don't worry, using standard string trim is fine,\n")
-io.stdout:write(":  between the type-character and the linebreak -\n")
-io.stdout:write(":  both \\n and \\t define a linebreak here.)\n")
-astlib.dump_mshl(ast, io.stdout, "")
+
+local suppliers = {}
+suppliers["string"] = function (f)
+ return f:read("*a")
+end
+suppliers["ast"] = function (f)
+ return astlib.read_mshl(f)
+end
+suppliers["tokenlist"] = suppliers["ast"]
+
+local preparers = {}
+preparers["tokenlist"] = function (alltokens)
+ return tokenSubset(alltokens, 1, #alltokens)
+end
+
+local consumers = {}
+consumers["string"] = function (f, s)
+ f:write(s)
+end
+consumers["ast"] = function (f, ast)
+ -- give enough information in the file that someone can decode the format
+ --  properly, without shipping an entire specification in every AST.
+ f:write(": ZBC AST\n")
+ f:write(": This is a binary file - treat it as such.\n")
+ f:write(": (Don't worry, using standard string trim is fine,\n")
+ f:write(":  between the type-character and the linebreak -\n")
+ f:write(":  both \\n and \\t define a linebreak here.)\n")
+ astlib.dump_mshl(ast, f, "")
+end
+consumers["tokenlist"] = function (f, ast)
+ -- give enough information in the file that someone can decode the format
+ --  properly, without shipping an entire specification in every AST.
+ f:write(": ZBC TOKEN LIST\n")
+ f:write(": This is a binary file - treat it as such.\n")
+ f:write(": (Don't worry, using standard string trim is fine,\n")
+ f:write(":  between the type-character and the linebreak -\n")
+ f:write(":  both \\n and \\t define a linebreak here.)\n")
+ astlib.dump_mshl(ast, f, "")
+end
+
+-- All critical pieces are in place, try to run the pipeline
+io.stderr:write("ZBC pipeline:\n")
+local data_type = nil
+local data = nil
+while #args > 0 do
+ local split = nil
+ for i = 1, #args do
+  if not split then
+   if args[i] == "--" then
+    split = i
+   end
+  end
+ end
+ local res = {}
+ if split then
+  for i = 1, split - 1 do
+   table.insert(res, table.remove(args, 1))
+  end
+  table.remove(args, 1)
+ else
+  res = args
+  args = {}
+ end
+
+ io.stderr:write(res[1] .. "\n")
+
+ local pass = require(table.remove(res, 1))
+
+ if not data then
+  data = suppliers[pass.input](io.stdin)
+  data_type = pass.input
+ end
+
+ if data_type ~= pass.input then
+  error("Incompatible types: " .. data_type .. " but wanted " .. pass.input)
+ end
+
+ if preparers[data_type] then
+  data = preparers[data_type](data)
+ end
+ data = pass.run(data, res)
+ data_type = pass.output
+end
+io.stderr:write("outputting...\n")
+if not data_type then
+ io.stderr:write("error: apparently, nothing was outputted.\n")
+end
+consumers[data_type](io.stdout, data)

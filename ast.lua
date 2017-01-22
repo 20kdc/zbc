@@ -4,6 +4,40 @@
 -- AST format functions.
 
 local ast = {}
+
+-- The guide to the base AST format.
+-- This is a binary format when it comes down to it,
+--  because strings may contain newlines in the source file that carry,
+--  but a lot of padding exists for readability :)
+-- Essentially, any object starts with a line.
+-- A line is always terminated by 0x0A or 0x08. (aka "\n" and "\t")
+-- A line MAY NOT be terminated by any other system,
+--  including extensions like 0x0D 0x0A, as allowing this
+--  would allow people to screw up their file output by accident,
+--  and that would probably cause the aforementioned newlines case to fail.
+
+-- All 0x20 bytes can be safely removed from a line.
+-- It is safe to use a whitespace-trimming function to achieve this.
+
+-- The first byte in a line specifies the type.
+-- The rest of the data in that line is specific to that object type,
+--  and immediately after the line ends, a binary blob may exist.
+
+-- There are only 4 object types.
+-- { : Table. Further objects will be values.
+--     No valid AST tables contain value holes,
+--      or non-numeric keys.
+-- } : Nil. If used as a table value, that ends the table.
+-- % : Number. The main body of the line is the number.
+-- $ : String. The main body of the line is the number of bytes in the text.
+--             Immediately following is that amount of bytes,
+--              plus an additional newline.
+-- Y : Yes.
+-- N : No.
+
+-- There is also:
+-- : : Comment. Read in another object to take it's place.
+
 ast.dump_mshl = function (obj, f, indent)
  local tp = type(obj)
  if obj == nil then

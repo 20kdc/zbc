@@ -859,6 +859,10 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
   return 0
  end
 
+ function compilers.null(code, stmt, input_term)
+  return 0
+ end
+
  local fc = {}
  local ft = handle_stmt(fc, stmt, -1)
 

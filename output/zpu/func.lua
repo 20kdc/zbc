@@ -15,9 +15,8 @@ local checkpoint_all_compounds = false
 -- This format should be used by optimization passes that want to add stuff.
 
 -- What's missing:
---  + missing operators, particularly unary ops ++ and --
---    (practically a nice break after dealing with switch)
---    also trinary op, but it's not a major issue
+--  + Fix unary ops or whatever's causing my testcase on them to go haywire
+--  + trinary op, but it's not a major issue
 --  + auto vectors
 --    (shouldn't be too difficult,
 --     just add a way to indicate how much "vector room" is needed.

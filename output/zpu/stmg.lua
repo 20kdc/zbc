@@ -158,7 +158,7 @@ aget_flow_breakers["TTCK"] = true
 -- IMPCREL .L.2
 -- RAW POPPCREL
 
--- 'label': (note that the stack checkpoint causes a duplicate-clean to make RSTK faster)
+-- 'label': eeek this is bad
 -- STCK
 -- IMPCREL .L.1
 -- RAW .LAB.labelid:
@@ -234,6 +234,18 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
   return true, (pstk[aid][1] + #tstk) * 4, pstk[aid][2]
  end
 
+ local function printstack(tstk, prefix)
+  local building = "// " .. prefix .. ";"
+  for _, v in ipairs(tstk) do
+   local ls = "<T>"
+   if v ~= "" then
+    ls = v
+   end
+   building = building .. " " .. ls
+  end
+  print(building .. " <pv0> <pv1> <pv2>...")
+ end
+
  -- Flushes stack to a given length.
  -- tstk is the current stack, while chkp is the stack as it was.
  -- It is assumed that chkp is a subset of tstk,
@@ -244,15 +256,7 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
   local chks = (#tstk - #chkp)
   -- tstk 2, chkp 1, result is 1, so indexes > 1 are in checkpoint.
   if (not fake) and annotate_fc then
-   local building = "// " .. chks .. ";"
-   for _, v in ipairs(tstk) do
-    local ls = "<T>"
-    if v ~= "" then
-     ls = v
-    end
-    building = building .. " " .. ls
-   end
-   print(building .. " <pv0> <pv1> <pv2>...")
+   printstack(tstk, tostring(chks))
   end
   local heavyduty = #tstk > 6
   for i = 1, chks do
@@ -453,20 +457,33 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
     -- (NOTE: RSTK is inefficient because it's rebuilding the stack under ridiculous conditions.
     --        This is why anything resembling a GOTO is a pain to work with for compilers.
     --        I suggest avoiding GOTO.)
-    for i = 1, #tstk do
-     local ri = (#tstk + 1) - i
-     local rv = tstk[ri]
-     local vstk = {}
-     if rv == "" then
-      print("PUSHSP")
-     else
-      -- Note: The "stale" flag is ignored since it's the stack flusher's job to fix that.
-      -- However, it can't be explicitly turned off since it's conditional if RSTK runs or not.
-      local ps, pos, stale = find_on_stack(pstk, vstk, rv, lockautos[rv])
-      print("LOADSP " .. pos)
+    local vstk = {}
+    if annotate_fc then printstack(tstk, "rstk") end
+    -- This has to account for checkpoints properly.
+    -- Checkpoints phase out variables and then return them at the end,
+    --  which means every checkpoint level needs to be satisfied.
+    local stacks = {tstk}
+    for _, v in ipairs(envstk) do
+     table.insert(stacks, 1, v[1])
+    end
+    for _, v in ipairs(stacks) do
+     local wanted = #v - #vstk
+     for i = 1, wanted do
+      local ri = (#v + 1) - i
+      local rv = v[ri]
+      if rv == "" then
+       print("PUSHSP")
+       global_last_was_im = false
+      else
+       -- Note: The "stale" flag is ignored since it's the stack flusher's job to fix that.
+       -- However, it can't be explicitly turned off since it's conditional if RSTK runs or not.
+       local ps, pos, stale = find_on_stack(pstk, vstk, rv, lockautos[rv])
+       if annotate_fc then print("// " .. rv .. "@" .. pos) end
+       print("LOADSP " .. pos)
+       global_last_was_im = false
+      end
+      table.insert(vstk, 1, rv)
      end
-     global_last_was_im = false
-     table.insert(vstk, 1, rv)
     end
     return
    end

@@ -14,6 +14,10 @@ local pu_run_simulations = true
 local pu_look_farfuture = false
 -- Debugging feature, annotates output code with information about AGET/ASET/etc.
 local blank_annotate = true
+-- Allows telling AGET to avoid setting the variable as a potential target.
+-- (What you gain in LOADSP length reduction is currently lost in unneeded STORESPs,
+--  !!need to work this out!!)
+local disable_aget_loadspszopt = false
 
 -- Function code is written via a multi-stage process:
 -- 1. The function code is written with a wrapping assembly,
@@ -195,7 +199,7 @@ end
 -- "lockautos" is used for cases where pointers to an auto are used.
 -- In this case, the auto has to be consistently read from the same place.
 local create_stack_system = nil
-create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, global_last_was_im, annotate_fc, autocount, lockautos, print)
+create_stack_system = function (pstk, tstk, envstk, breaking, modifiedautos, instant, lastraw, global_last_was_im, annotate_fc, autocount, lockautos, print)
  -- Stack System Brief
 
  -- pstk is "permanent context".
@@ -252,13 +256,17 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
  --  but with some useless temps being autonames.
  -- In this case, the values must be returned there so everything
  --  checks out properly.
- local function stack_flush(pstk, tstk, chkp, fake)
+ -- Another thing to note is that this function only works because
+ -- duplicate auto references are removed.
+ -- Otherwise it would be even more complicated.
+ local function stack_flush(pstk, tstk, chkp, mda, fake)
   local chks = (#tstk - #chkp)
   -- tstk 2, chkp 1, result is 1, so indexes > 1 are in checkpoint.
   if (not fake) and annotate_fc then
    printstack(tstk, tostring(chks))
   end
   local heavyduty = #tstk > 6
+  local dealtwith = {}
   for i = 1, chks do
    local k = 1
    local v = tstk[1]
@@ -266,7 +274,15 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
     k = i
     v = tstk[i]
    end
-   if v ~= "" then
+   -- Notably, right now this can't discriminate on mda because
+   -- of nested checkpoints.
+   -- Nested checkpoints can't propagate MdA,
+   -- since it would likely lead to useless copies, and maybe other bad things.
+   -- (Test this maybe? I'm unsure on it.)
+   -- And if MdA isn't propagated upward, then a value may be copied upward,
+   --  but the fact it had been copied upward would be lost,
+   --  and then the upwards copy would not copied further.
+   if (v ~= "") and not dealtwith[v] then
     -- Important thing
     local pv, ofs, st = find_on_stack(pstk, chkp, v)
     local chksC = (#tstk - #chkp)
@@ -296,6 +312,7 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
       -- print("// CHECKME, " .. dofs .. " wanted, " .. (dofs - chksC) .. " tIdx, " .. chkp[dofs - chksC])
       --end
      end
+     dealtwith[v] = true
     else
      -- can be discarded
      if not heavyduty then
@@ -339,6 +356,23 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
   -- Now the length is the same, finish off the revert.
   for i = 1, #chkp do
    tstk[i] = chkp[i]
+  end
+
+  -- Run instants fixup for cases
+  -- where the default auto storage was actually used for something
+  -- (shocking, I know)
+  for k, v in pairs(mda) do
+   if not dealtwith[k] then
+    -- check for the possibility it's on stack
+    local pv, ofs, st = find_on_stack(pstk, {}, k)
+    ofs = ofs + (4 * #chkp)
+    local pvb, ofsb, stb = find_on_stack(pstk, chkp, k)
+    if not pvb then
+     print("LOADSP " .. ofs)
+     print("STORESP " .. (ofsb + 4))
+     dealtwith[k] = true
+    end
+   end
   end
  end
 
@@ -432,7 +466,8 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
     -- ETCK
     -- }
     clean_duplicates()
-    table.insert(envstk, 1, {tstk, breaking})
+    table.insert(envstk, 1, {tstk, breaking, modifiedautos})
+    modifiedautos = {}
     local nstk = {}
     for k, v in ipairs(tstk) do
      nstk[k] = v
@@ -442,8 +477,9 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
    end
    if v[1] == "SBCK" then
     clean_duplicates()
-    table.insert(envstk, 1, {tstk, breaking})
+    table.insert(envstk, 1, {tstk, breaking, modifiedautos})
     breaking = tstk
+    modifiedautos = {}
     local nstk = {}
     for k, v in ipairs(tstk) do
      nstk[k] = v
@@ -458,7 +494,6 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
     --        This is why anything resembling a GOTO is a pain to work with for compilers.
     --        I suggest avoiding GOTO.)
     local vstk = {}
-    if annotate_fc then printstack(tstk, "rstk") end
     -- This has to account for checkpoints properly.
     -- Checkpoints phase out variables and then return them at the end,
     --  which means every checkpoint level needs to be satisfied.
@@ -466,10 +501,12 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
     for _, v in ipairs(envstk) do
      table.insert(stacks, 1, v[1])
     end
-    for _, v in ipairs(stacks) do
+    for k, v in ipairs(stacks) do
+     if annotate_fc then printstack(v, "rstk" .. k) end
      local wanted = #v - #vstk
+     -- wanted == how many elements need to be added
      for i = 1, wanted do
-      local ri = (#v + 1) - i
+      local ri = #v - #vstk
       local rv = v[ri]
       if rv == "" then
        print("PUSHSP")
@@ -582,7 +619,7 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
     print("LOADSP " .. pos)
     -- There are now multiple copies of the auto,
     --  but all are currently valid.
-    if lockautos[v[2]] then
+    if lockautos[v[2]] or disable_aget_loadspszopt then
      -- If locked, the auto must never be referred to via another pointer.
      table.insert(tstk, 1, "")
     else
@@ -609,6 +646,7 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
     else
      table.insert(tstk, 1, v[2])
     end
+    modifiedautos[v[2]] = true
     return
    end
    if (v[1] == "BRKC") or (v[1] == "FSTK") then
@@ -621,22 +659,24 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
      tmps[k] = {v[1], v[2]}
     end
     if v[1] == "FSTK" then
-     stack_flush(tmps, tmpk, {}) -- about to jump, so do all work in clones
+     stack_flush(tmps, tmpk, {}, modifiedautos) -- about to jump, so do all work in clones
     else
-     stack_flush(tmps, tmpk, breaking) -- etc.
+     stack_flush(tmps, tmpk, breaking, modifiedautos) -- etc.
     end
     return
    end
    if v[1] == "ETCK" then
     local otk = table.remove(envstk, 1)
-    stack_flush(pstk, tstk, otk[1])
+    stack_flush(pstk, tstk, otk[1], modifiedautos)
     breaking = otk[2]
+    modifiedautos = otk[3]
     return
    end
    if v[1] == "TTCK" then
     local otk = table.remove(envstk, 1)
-    stack_flush(pstk, tstk, otk[1], true)
+    stack_flush(pstk, tstk, otk[1], modifiedautos, true)
     breaking = otk[2]
+    modifiedautos = otk[3]
     return
    end
    if (v[1] == "RETV") or (v[1] == "RETN") then
@@ -810,7 +850,7 @@ create_stack_system = function (pstk, tstk, envstk, breaking, instant, lastraw, 
    error("cannot handle " .. v[1])
   end, ["clone"] = function(printer, annotate)
    local unpack = unpack or table.unpack
-   local r = cloner({pstk, tstk, envstk, breaking, instant, lastraw, global_last_was_im, annotate, autocount, lockautos})
+   local r = cloner({pstk, tstk, envstk, breaking, modifiedautos, instant, lastraw, global_last_was_im, annotate, autocount, lockautos})
    r[#r + 1] = printer
    return create_stack_system(unpack(r))
   end, ["handle_fc"] = function (fc)
@@ -833,10 +873,11 @@ local function create_blank_stack_system(autocount, lockautos, printer)
  local tstk = {}
  local envstk = {}
  local breaking = nil
+ local modifiedautos = {}
  local instant = 0
  local lastraw = false
  local global_last_was_im = false
 
- return create_stack_system(pstk, tstk, envstk, breaking, instant, lastraw, global_last_was_im, blank_annotate, autocount, lockautos, printer)
+ return create_stack_system(pstk, tstk, envstk, breaking, modifiedautos, instant, lastraw, global_last_was_im, blank_annotate, autocount, lockautos, printer)
 end
 return create_blank_stack_system

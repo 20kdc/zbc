@@ -46,6 +46,7 @@
 -- This should not make a difference for any valid B program.
 
 -- compound, {<statement>, ...}
+-- null, <line>
 
 -- If your compiler implements the full Honeywell B set rather than the PDP-11 B set,
 --  then you have to handle default: as a special case of label.
@@ -280,6 +281,7 @@ local function par_stmt_inner(tokens)
  --  or something terminatable with a semicolon.
  local conditional = false
  local canhaveelse = false
+ local condpars = false
  if tokens[1][1] == "id" then
   -- This should be first, for lack of any better ideas.
   if tokens[2] then
@@ -292,9 +294,11 @@ local function par_stmt_inner(tokens)
   if tokens[1][2] == "if" then
    conditional = true
    canhaveelse = true
+   condpars = true
   end
   if tokens[1][2] == "while" then
    conditional = true
+   condpars = true
   end
   -- fun fact: it is legal, for some bizzare reason,
   --  for a switch to not have () around the rvalue.
@@ -315,7 +319,16 @@ local function par_stmt_inner(tokens)
  if conditional then
   local ct = tokens[1][2]
   local ctl = tokens[1][3]
-  local tokens, ex = par_rvalue(tokens:sub(2))
+  local ex = nil
+  if condpars then
+   if tokens[2][1] ~= "lp" then error("Conditional wants (), but couldn't get it @ line " .. ctl) end
+   local pos = tokens:findAVP("rp")
+   local tks = tokens:sub(2, pos)
+   tokens = tokens:sub(pos + 1)
+   ex = park_rvalue(tks)
+  else
+   tokens, ex = par_rvalue(tokens:sub(2))
+  end
   local tokens, s = par_stmt(tokens)
   if canhaveelse then
    if tokens[1] then

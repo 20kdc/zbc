@@ -778,10 +778,10 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
   return tm
  end
  function compilers.label(code, stmt, input_term)
+  table.insert(code, {"STCK"})
   local caseA = get_unique_label()
   local caseB = get_unique_label()
 
-  table.insert(code, {"STCK"})
   if input_term ~= 1 then
    table.insert(code, {"IMPCREL", caseB})
    table.insert(code, {"RAW", "POPPCREL"})

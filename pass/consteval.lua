@@ -7,6 +7,7 @@
 --  forgotten to add <your favorite AST node> to the relevant backend passes.
 
 local astlib = require("ast")
+local walker = require("astwalker")
 
 return {["run"] = function (ast, args)
  local defines = {}
@@ -118,51 +119,14 @@ return {["run"] = function (ast, args)
  -- Used to make sure that no matter what, all rvalues are handled.
  -- This has to cover all expression AST nodes.
 
- local function handle_more_rvalues(rv)
-  if rv[1] == "int" then return end
-  if rv[1] == "id" then return end
-  if rv[1] == "char" then return end
-  if rv[1] == "string" then return end
-
-  if rv[1] == "puop" then
-   handle_rvalue(rv[3])
-   return
-  end
-  if rv[1] == "pbop" then
-   handle_rvalue(rv[3])
-   handle_rvalue(rv[4])
-   return
-  end
-  if rv[1] == "ptop" then
-   handle_rvalue(rv[3])
-   handle_rvalue(rv[4])
-   handle_rvalue(rv[5])
-   return
-  end
-  if (rv[1] == "arglist(") or (rv[1] == "arglist[") then
-   for _, v in ipairs(rv[2]) do
-    handle_rvalue(v)
-   end
-   return
-  end
-  if (rv[1] == "call") or (rv[1] == "index") then
-   if indexnicer and (rv[1] == "index") then
-    if #rv[3] ~= 1 then error("Multiple indices with -I @ " .. rv[4]) end
-    -- Do this *before* constantization
-    local o = rv[3][1]
-    rv[3][1] = {"pbop", "*", o, {"int", "4", o[#o]}, o[#o]}
-   end
-   handle_rvalue(rv[2])
-   for _, v in ipairs(rv[3]) do
-    handle_rvalue(v)
-   end
-   return
-  end
-  error("IDK how to handle " .. rv[1] .. " @ " .. rv[#rv])
- end
-
  handle_rvalue = function (rv)
-  handle_more_rvalues(rv)
+  if indexnicer and (rv[1] == "index") then
+   if #rv[3] ~= 1 then error("Multiple indices with -I @ " .. rv[4]) end
+   -- Do this *before* constantization
+   local o = rv[3][1]
+   rv[3][1] = {"pbop", "*", o, {"int", "4", o[#o]}, o[#o]}
+  end
+  walker.walk_rvalue(rv, handle_rvalue)
   local r = try_calc(rv)
   if r then
    -- overwrite the instance
@@ -185,89 +149,12 @@ return {["run"] = function (ast, args)
  end
 
  local handle_statement = nil
-
- -- This must handle every statement.
  handle_statement = function (stmt)
-  if stmt[1] == "compound" then
-   for _, v in ipairs(stmt[2]) do
-    handle_statement(v)
-   end
-   return
-  end
-  if stmt[1] == "extrn" then
-   return
-  end
-  if stmt[1] == "auto" then
-   for _, v in ipairs(stmt[2]) do
-    if v[3] then
-     handle_rvalue(v[3])
-    end
-   end
-   return
-  end
-  if stmt[1] == "rvalue" then
-   handle_rvalue(stmt[2])
-   return
-  end
-  if stmt[1] == "label" then
-   handle_statement(stmt[3])
-   return
-  end
-  if stmt[1] == "break" then
-   return
-  end
-  if stmt[1] == "return_void" then
-   return
-  end
-  if stmt[1] == "return" then
-   handle_rvalue(stmt[2])
-   return
-  end
-  if stmt[1] == "goto" then
-   handle_rvalue(stmt[2])
-   return
-  end
-  if stmt[1] == "case" then
-   handle_rvalue(stmt[2])
-   handle_statement(stmt[3])
-   return
-  end
-  if (stmt[1] == "if") or (stmt[1] == "switch") or (stmt[1] == "while") then
-   handle_rvalue(stmt[2])
-   handle_statement(stmt[3])
-   return
-  end
-  if stmt[1] == "if_else" then
-   handle_rvalue(stmt[2])
-   handle_statement(stmt[3])
-   handle_statement(stmt[4])
-   return
-  end
-  if stmt[1] == "null" then
-   return
-  end
-  error("IDK statement " .. stmt[1] .. " @ " .. stmt[#stmt])
- end
-
- local function handle_declaration(def)
-  if def[1] == "function" then
-   handle_statement(def[4])
-  end
-  if def[1] == "vecdef" then
-   handle_rvalue(def[3])
-   for _, v in ipairs(def[4]) do
-    handle_rvalue(v)
-   end
-  end
-  if def[1] == "vardef" then
-   for _, v in ipairs(def[3]) do
-    handle_rvalue(v)
-   end
-  end
+  walker.walk_statement(stmt, handle_statement, handle_rvalue)
  end
 
  for _, v in ipairs(ast) do
-  handle_declaration(v)
+  walker.walk_declaration(v, handle_statement, handle_rvalue)
  end
  return ast
 end, ["input"] = "ast", ["output"] = "ast"}

@@ -265,7 +265,7 @@ return function (args, stmt, autos, lockautos, arrays, externs, global_variables
   if rv[2][1] == "id" then
    if (rv[2][2] == "__asm__") or (rv[2][2] == "__asmnv__") then
     local returnsval = (rv[2][2] ~= "__asmnv__")
-    if state and (not returnsval) then
+    if (not state) and (not returnsval) then
      error("Assembly tried to avoid returning value when needed @ " .. rv[2][3])
     end
     -- Autos are presented on stack from BOS to TOS
@@ -273,9 +273,12 @@ return function (args, stmt, autos, lockautos, arrays, externs, global_variables
     for i = 2, #rv[3] do
      local k = rv[3][i]
      if k[1] ~= "id" then error("Args must be autos @ " .. k[#k]) end
-     table.insert(code, {"AGET", k})
+     table.insert(code, {"AGET", k[2]})
      table.insert(code, {"DPOP"})
      table.insert(code, {"DTMP"})
+    end
+    for i = 2, #rv[3] do
+     table.insert(code, {"DPOP"})
     end
     local ps = astlib.parse_str(rv[3][1][2], astlib.default_escapes, rv[3][1][3])
     table.insert(code, {"RAW", ps})

@@ -659,10 +659,7 @@ return function (args, stmt, autos, lockautos, arrays, externs, global_variables
   local labend = get_unique_label()
   table.insert(code, {"RAWLB", lab .. ":"})
   table.insert(code, {"SBCK"})
-  handle_rval(code, stmt[2])
-  table.insert(code, {"DPOP"})
-  table.insert(code, {"IMPCREL", labend})
-  table.insert(code, {"RAW", "EQBRANCH"})
+  handle_inv_conditional(code, stmt[2], labend)
   table.insert(code, {"SBCK"})
 
   local ocbl = current_break_label

@@ -13,7 +13,7 @@ local pu_run_simulations = true
 --  as the errors may be somewhere "inner".
 local pu_look_farfuture = false
 -- Debugging feature, annotates output code with information about AGET/ASET/etc.
-local blank_annotate = true
+local blank_annotate = false
 -- Allows telling AGET to avoid setting the variable as a potential target.
 -- (What you gain in LOADSP length reduction is currently lost in unneeded STORESPs,
 --  !!need to work this out!!)

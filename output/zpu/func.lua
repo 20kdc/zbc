@@ -261,42 +261,20 @@ return function (args, stmt, autos, lockautos, arrays, externs, global_variables
 
  function valcompilers.call(code, rv, mode, state)
   if mode then modeerror(rv) end
-  -- Check for __asm__!
-  if rv[2][1] == "id" then
-   if (rv[2][2] == "__asm__") or (rv[2][2] == "__asmnv__") then
-    local returnsval = (rv[2][2] ~= "__asmnv__")
-    if (not state) and (not returnsval) then
-     error("Assembly tried to avoid returning value when needed @ " .. rv[2][3])
-    end
-    -- Autos are presented on stack from BOS to TOS
-    if rv[3][1][1] ~= "string" then error("Code must be string @ " .. rv[2][3]) end
-    for i = 2, #rv[3] do
-     local k = rv[3][i]
-     if k[1] ~= "id" then error("Args must be autos @ " .. k[#k]) end
-     table.insert(code, {"AGET", k[2]})
-     table.insert(code, {"DPOP"})
-     table.insert(code, {"DTMP"})
-    end
-    for i = 2, #rv[3] do
-     table.insert(code, {"DPOP"})
-    end
-    local ps = astlib.parse_str(rv[3][1][2], astlib.default_escapes, rv[3][1][3])
-    table.insert(code, {"RAW", ps})
-    if returnsval then
-     table.insert(code, {"DTMP"})
-    end
-    return
-   end
-  end
 
-  if checkpoint_calls then
+  local call_id = rv[2][1] == "id"
+  local call_isasm = call_id and ((rv[2][2] == "__asm__") or (rv[2][2] == "__asmnv__"))
+  if checkpoint_calls and (not call_isasm) then
    table.insert(code, {"STCK"})
   end
   table.insert(code, {"IST+"}) -- stack wastage *will* cause more issues than it solves during a call.
   -- There are some calls which need to be handled specially,
   --  since they can be reduced to single instructions without user cost.
   local argholds = {"RELE"}
-  for i = 1, #rv[3] do
+  -- the first arg has to be cut off if __asm__ is in use
+  local removeargs = 0
+  if call_isasm then removeargs = 1 end
+  for i = 1, (#rv[3]) - removeargs do
    local k = (#rv[3] - i) + 1
    local v = rv[3][k]
    local h = {}
@@ -307,7 +285,7 @@ return function (args, stmt, autos, lockautos, arrays, externs, global_variables
    table.insert(code, {"HOLD", h})
    table.insert(argholds, h)
   end
-  if rv[2][1] ~= "id" then
+  if not call_id then
    local finalhold = {}
    handle_rval(code, rv[2])
    table.insert(code, {"HOLD", finalhold})
@@ -323,6 +301,26 @@ return function (args, stmt, autos, lockautos, arrays, externs, global_variables
    --   that just got set up, and wasn't usable because of the stack layout)
    -- (note, this only helps anything because ID never burns stack)
    table.insert(code, argholds)
+
+   -- Check for __asm__ here, if so do things differently.
+   -- (This is why the checkpoint-setter above has to be disabled if call_isasm)
+   if call_isasm then
+    local returnsval = (rv[2][2] ~= "__asmnv__")
+    if (not state) and (not returnsval) then
+     error("Assembly tried to avoid returning value when needed @ " .. rv[2][3])
+    end
+    if rv[3][1][1] ~= "string" then error("Code must be string @ " .. rv[2][3]) end
+    for i = 2, #rv[3] do
+     table.insert(code, {"DPOP"})
+    end
+    local ps = astlib.parse_str(rv[3][1][2], astlib.default_escapes, rv[3][1][3])
+    table.insert(code, {"RAW", ps})
+    if returnsval then
+     table.insert(code, {"DTMP"})
+    end
+    table.insert(code, {"IST-"})
+    return
+   end
 
    local can_relpc = false
    if not likeautos[rv[2][2]] then

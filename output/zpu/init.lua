@@ -80,13 +80,26 @@ return {["run"] = function(ast, args)
   local autos2 = {}
   local lockautos = {}
   local externs = {}
-  local body, terminating = handle_fstmt(f[3], f[4], autos2, lockautos, externs, global_variables, get_unique_label, gen_words, string_terminator)
+  local arrays = {}
+  local body, terminating = handle_fstmt(f[3], f[4], autos2, lockautos, arrays, externs, global_variables, get_unique_label, gen_words, string_terminator)
   for k, _ in pairs(externs) do
    if not global_local_externs[k] then
     global_externs[k] = true
    end
   end
   local autos = {}
+  for k, v in pairs(arrays) do
+   for i = 1, v do
+    -- NOTE: This format can be relied upon by output.zpu-tailored AST optimization.
+    -- Specifically, if the "source" auto is never set or ptr-referenced,
+    --  it's perfectly fine to convert into these "hidden autos".
+    -- Otherwise, do not do it!
+    --(It is also relied upon by func.lua to get the true array pointer via APTR.)
+    local id = "@output.zpu@stackarray@" .. k .. "@" .. (i - 1)
+    table.insert(autos, id)
+    lockautos[id] = true
+   end
+  end
   for k, _ in pairs(autos2) do
    table.insert(autos, k)
   end

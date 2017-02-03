@@ -250,6 +250,25 @@ create_stack_system = function (pstk, tstk, envstk, breaking, modifiedautos, ins
   print(building .. " <pv0> <pv1> <pv2>...")
  end
 
+ local function write_spofs(o, op)
+  if o <= 124 then
+   print(op .. "SP " .. o)
+  else
+   local p = math.floor(o / 4)
+   print("IM " .. (p + 1))
+   print("PUSHSPADD")
+   print(op)
+  end
+  global_last_was_im = false
+ end
+ -- These two functions should be used for *non-constant* LOADSP/STORESPs.
+ local function write_loadsp(o)
+  write_spofs(o, "LOAD")
+ end
+ local function write_storesp(o)
+  write_spofs(o, "STORE")
+ end
+
  -- Flushes stack to a given length.
  -- tstk is the current stack, while chkp is the stack as it was.
  -- It is assumed that chkp is a subset of tstk,
@@ -292,14 +311,13 @@ create_stack_system = function (pstk, tstk, envstk, breaking, modifiedautos, ins
     if tstk[dofs] ~= v then
      if heavyduty then
       if not fake then
-       print("LOADSP " .. (4 * (i - 1)))
-       global_last_was_im = false
+       write_loadsp(4 * (i - 1))
       end
       ofs = ofs + 4
      end
      if not fake then
       --print("// Factors " .. chksC .. ";" .. dofs .. ";" .. tostring(pv))
-      print("STORESP " .. ofs)
+      write_storesp(ofs)
       global_last_was_im = false
      end
      if pv then
@@ -368,9 +386,11 @@ create_stack_system = function (pstk, tstk, envstk, breaking, modifiedautos, ins
     ofs = ofs + (4 * #chkp)
     local pvb, ofsb, stb = find_on_stack(pstk, chkp, k)
     if not pvb then
-     print("LOADSP " .. ofs)
-     print("STORESP " .. (ofsb + 4))
+     write_loadsp(ofs)
+     write_storesp(ofsb + 4)
      dealtwith[k] = true
+    else
+     
     end
    end
   end
@@ -516,8 +536,7 @@ create_stack_system = function (pstk, tstk, envstk, breaking, modifiedautos, ins
        -- However, it can't be explicitly turned off since it's conditional if RSTK runs or not.
        local ps, pos, stale = find_on_stack(pstk, vstk, rv, lockautos[rv])
        if annotate_fc then print("// " .. rv .. "@" .. pos) end
-       print("LOADSP " .. pos)
-       global_last_was_im = false
+       write_loadsp(pos)
       end
       table.insert(vstk, 1, rv)
      end
@@ -616,7 +635,7 @@ create_stack_system = function (pstk, tstk, envstk, breaking, modifiedautos, ins
       end
      end
     end
-    print("LOADSP " .. pos)
+    write_loadsp(pos)
     -- There are now multiple copies of the auto,
     --  but all are currently valid.
     if lockautos[v[2]] or disable_aget_loadspszopt then
@@ -625,7 +644,6 @@ create_stack_system = function (pstk, tstk, envstk, breaking, modifiedautos, ins
     else
      table.insert(tstk, 1, v[2])
     end
-    global_last_was_im = false
     return
    end
    if v[1] == "ASET" then
@@ -640,7 +658,7 @@ create_stack_system = function (pstk, tstk, envstk, breaking, modifiedautos, ins
     if lockautos[v[2]] or (instant ~= 0) then
      -- In this case, the root must be kept up to date.
      local np = (#tstk) + pstk[v[2]][1] + 1
-     print("STORESP " .. (np * 4))
+     write_storesp(np * 4)
      global_last_was_im = false
      pstk[v[2]][2] = false
     else
@@ -727,6 +745,7 @@ create_stack_system = function (pstk, tstk, envstk, breaking, modifiedautos, ins
     -- and A B C D is wanted.
     -- RELE goes from BOS to TOS.
     -- As it is, only the bottom half of a stack can be safely copied.
+    if annotate_fc then printstack(tstk, "RELE") end
     local matchc = 0
     for m = 1, (#v - 1) do
      local ok = true
@@ -746,8 +765,7 @@ create_stack_system = function (pstk, tstk, envstk, breaking, modifiedautos, ins
     for i = 2 + matchc, #v do
      local r = v[i][1]
      local ofs = ((#tstk) - r) * 4
-     print("LOADSP " .. ofs)
-     global_last_was_im = false
+     write_loadsp(ofs)
      table.insert(tstk, 1, "")
     end
     return

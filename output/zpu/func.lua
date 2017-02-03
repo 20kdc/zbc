@@ -42,7 +42,7 @@ local checkpoint_all_compounds = false
 
 --  + more backends (...announce on apr.1st. not happening.)
 
-return function (args, stmt, autos, lockautos, externs, global_variables, get_unique_label, gen_words, str_term)
+return function (args, stmt, autos, lockautos, arrays, externs, global_variables, get_unique_label, gen_words, str_term)
  local astlib = require("ast")
  local likeautos = {}
  for _, v in ipairs(args) do
@@ -104,27 +104,43 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
 
  -- Conditional helper --
 
- -- returns r, always.
- -- r is the RAW to use for the actual branch (must accept relative)
- -- always is used by while to determine if this is a while (1) or similar
- local function handle_inv_conditional(code, rv)
+ -- Writes a conditional branch into the code.
+ -- This branch will occur if the value given is zero.
+ -- returns willskip.
+ local function handle_inv_conditional(code, rv, labend)
   while rv[1] == "arglist(" do
    if #rv[2] ~= 1 then error("Wrapper @ " .. rv[3] .. " had !=1 param.") end
    rv = rv[2][1]
   end
+
+  if rv[1] == "int" then
+   if astlib.parse_int(rv[2]) ~= 0 then
+    -- Do not branch
+    return
+   else
+    -- Always branch
+    table.insert(code, {"IMPCREL", labend})
+    table.insert(code, {"RAW", "POPPCREL"})
+    return 
+   end
+  end
+
   if rv[1] == "puop" then
    if rv[2] == "!" then
     if not rv[4] then
      -- Special exception.
      handle_rval(code, rv[3])
      table.insert(code, {"DPOP"})
-     return "NEQBRANCH", false
+     table.insert(code, {"IMPCREL", labend})
+     table.insert(code, {"RAW", "NEQBRANCH"})
+     return
     end
    end
   end
   handle_rval(code, rv)
   table.insert(code, {"DPOP"})
-  return "EQBRANCH", false
+  table.insert(code, {"IMPCREL", labend})
+  table.insert(code, {"RAW", "EQBRANCH"})
  end
 
  -- RVAL COMPILERS --
@@ -195,7 +211,9 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
  -- RVALs : not-quite-primary general
 
  function valcompilers.index(code, rv, mode, state)
+  local valsethold = {}
   if mode == "set" then
+   table.insert(code, {"HOLD", valsethold})
    if state then
     -- Don't even bother to go through and gen. basecode
     table.insert(code, {"RELE", state})
@@ -212,7 +230,11 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
   handle_rval(code, rv[3][1])
   local baseI = {}
   table.insert(code, {"HOLD", baseI})
-  table.insert(code, {"RELE", baseP, baseI})
+  if mode == "set" then
+   table.insert(code, {"PU", {{"RELE", valsethold, baseP, baseI}}, {{"RELE", valsethold, baseI, baseP}}})
+  else
+   table.insert(code, {"PU", {{"RELE", baseP, baseI}}, {{"RELE", baseI, baseP}}})
+  end
   table.insert(code, {"DPOP"})
   table.insert(code, {"DPOP"})
   table.insert(code, {"RAW", "ADD"})
@@ -365,22 +387,33 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
    handle_rval(code, rv[3], "getset", st)
    -- since getset is defined to keep the state as burned stack,
    --  and *NOT* the top-most value, things are fine! * maybe
+   local hld = {}
    if rv[4] then
     -- operation happens afterwards
-    table.insert(code, {"RAW", "LOADSP 0"})
-    table.insert(code, {"IM", "1"})
-    table.insert(code, {"RAW", top})
-    table.insert(code, {"DTMP"})
+    table.insert(code, {"HOLD", hld})
+    if top == "ADD" then
+     table.insert(code, {"IM", "1"})
+     table.insert(code, {"RAW", "ADDSP 4"})
+     table.insert(code, {"DTMP"})
+    else
+     table.insert(code, {"RAW", "LOADSP 0"})
+     table.insert(code, {"DTMP"})
+     table.insert(code, {"IM", "1"})
+     table.insert(code, {"RAW", top})
+    end
    else
     -- operation happens beforehand
     table.insert(code, {"DPOP"})
     table.insert(code, {"IM", "1"})
     table.insert(code, {"RAW", top})
     table.insert(code, {"DTMP"})
+    table.insert(code, {"HOLD", hld})
     table.insert(code, {"RAW", "LOADSP 0"})
     table.insert(code, {"DTMP"})
    end
    handle_rval(code, rv[3], "set", st)
+   -- not great, but it works
+   table.insert(code, {"RELE", hld})
    return
   end
   if not rv[4] then
@@ -653,9 +686,7 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
  compilers["if"] = function (code, stmt, input_term)
   local labend = get_unique_label()
   if input_term ~= 1 then
-   local r, always = handle_inv_conditional(code, stmt[2])
-   table.insert(code, {"IMPCREL", labend})
-   table.insert(code, {"RAW", r})
+   handle_inv_conditional(code, stmt[2], labend)
   end
   table.insert(code, {"STCK"})
   local tm = handle_stmt(code, stmt[3], input_term)
@@ -674,9 +705,7 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
   local labend = get_unique_label()
   local labelse = get_unique_label()
   if input_term ~= 1 then
-   local r, always = handle_inv_conditional(code, stmt[2])
-   table.insert(code, {"IMPCREL", labelse})
-   table.insert(code, {"RAW", r})
+   local r, always = handle_inv_conditional(code, stmt[2], labelse)
   end
   table.insert(code, {"STCK"})
   handle_stmt(code, stmt[3], input_term)
@@ -850,7 +879,16 @@ return function (args, stmt, autos, lockautos, externs, global_variables, get_un
  function compilers.auto(code, stmt, input_term)
   for _, v in ipairs(stmt[2]) do
    if v[2] then
-    error("Still need to work out how vector definitions should work @ " .. stmt[3])
+    -- This means it should be set *now*.
+    if v[2][1] ~= "int" then
+     error("Length must be const. int @ " .. v[2][#v[2]])
+    end
+    local len = astlib.parse_int(v[2][2])
+    if len ~= 0 then
+     table.insert(code, {"APTR", "@output.zpu@stackarray@" .. v[1] .. "@0"})
+     table.insert(code, {"ASET", v[1]})
+     arrays[v[1]] = len
+    end
    end
    likeautos[v[1]] = true
    autos[v[1]] = true

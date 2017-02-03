@@ -106,7 +106,7 @@ return function (args, stmt, autos, lockautos, arrays, externs, global_variables
 
  -- Writes a conditional branch into the code.
  -- This branch will occur if the value given is zero.
- -- returns willskip.
+ -- Returns "always", and then if always is true, if it will always branch or not.
  local function handle_inv_conditional(code, rv, labend)
   while rv[1] == "arglist(" do
    if #rv[2] ~= 1 then error("Wrapper @ " .. rv[3] .. " had !=1 param.") end
@@ -116,12 +116,12 @@ return function (args, stmt, autos, lockautos, arrays, externs, global_variables
   if rv[1] == "int" then
    if astlib.parse_int(rv[2]) ~= 0 then
     -- Do not branch
-    return
+    return true, false
    else
     -- Always branch
     table.insert(code, {"IMPCREL", labend})
     table.insert(code, {"RAW", "POPPCREL"})
-    return 
+    return true, true
    end
   end
 
@@ -133,7 +133,7 @@ return function (args, stmt, autos, lockautos, arrays, externs, global_variables
      table.insert(code, {"DPOP"})
      table.insert(code, {"IMPCREL", labend})
      table.insert(code, {"RAW", "NEQBRANCH"})
-     return
+     return false
     end
    end
   end
@@ -141,6 +141,7 @@ return function (args, stmt, autos, lockautos, arrays, externs, global_variables
   table.insert(code, {"DPOP"})
   table.insert(code, {"IMPCREL", labend})
   table.insert(code, {"RAW", "EQBRANCH"})
+  return false
  end
 
  -- RVAL COMPILERS --
@@ -664,10 +665,16 @@ return function (args, stmt, autos, lockautos, arrays, externs, global_variables
 
   local ocbl = current_break_label
   current_break_label = labend
-  handle_stmt(code, stmt[3], -1)
+  local innerblock_term = handle_stmt(code, stmt[3], -1)
   current_break_label = ocbl
 
-  table.insert(code, {"ETCK"})
+  if innerblock_term == 1 then
+   -- If the inner block explicitly terminates,
+   --  then it's doing it's own stack cleanup and thus the while loop cleanup isn't needed.
+   table.insert(code, {"TTCK"})
+  else
+   table.insert(code, {"ETCK"})
+  end
   table.insert(code, {"BRKC"})
   table.insert(code, {"IMPCREL", lab})
   table.insert(code, {"RAW", "POPPCREL"})
@@ -682,38 +689,87 @@ return function (args, stmt, autos, lockautos, arrays, externs, global_variables
 
  compilers["if"] = function (code, stmt, input_term)
   local labend = get_unique_label()
+  local always, alwaysval = false, false
   if input_term ~= 1 then
-   handle_inv_conditional(code, stmt[2], labend)
+   always, alwaysval = handle_inv_conditional(code, stmt[2], labend)
   end
   table.insert(code, {"STCK"})
-  local tm = handle_stmt(code, stmt[3], input_term)
-  table.insert(code, {"ETCK"})
-  if input_term ~= 1 then
-   table.insert(code, {"RAWLB", labend .. ":"})
+
+  local tmi = input_term
+  if always and (not alwaysval) then tmi = 1 end
+  local tm = handle_stmt(code, stmt[3], tmi)
+  if tm ~= 0 then tmi = tm end
+
+  if tmi ~= 1 then
+   table.insert(code, {"ETCK"})
+  else
+   table.insert(code, {"TTCK"})
   end
+  table.insert(code, {"RAWLB", labend .. ":"})
   -- If it's terminating, it MAY be terminating,
   --  if it's explicitly nonterminating, it will always be so.
-  if tm == 1 then tm = 0 end
-  return tm
+  if tm == -1 then
+   return -1
+  end
+  if tm == 1 then
+   if always then
+    if alwaysval then
+     return 1
+    end
+   end
+   return 0
+  end
+  return 0
  end
 
- -- This needs termination work
  compilers["if_else"] = function (code, stmt, input_term)
   local labend = get_unique_label()
   local labelse = get_unique_label()
+
+  local always, alwaysval = false, false
   if input_term ~= 1 then
-   local r, always = handle_inv_conditional(code, stmt[2], labelse)
+   always, alwaysval = handle_inv_conditional(code, stmt[2], labelse)
   end
+
+  local canruntrue = true
+  local canrunfalse = true
+  if always then
+   canruntrue = alwaysval
+   canrunfalse = not alwaysval
+  end
+
+  local iterm2 = input_term
+  if not canruntrue then iterm2 = 1 end
+
   table.insert(code, {"STCK"})
-  handle_stmt(code, stmt[3], input_term)
-  table.insert(code, {"ETCK"})
-  table.insert(code, {"IMPCREL", labend})
-  table.insert(code, {"RAW", "POPPCREL"})
+  local term = handle_stmt(code, stmt[3], iterm2)
+  if term ~= 0 then iterm2 = term end
+  
+  if iterm2 ~= 1 then
+   table.insert(code, {"ETCK"})
+   table.insert(code, {"IMPCREL", labend})
+   table.insert(code, {"RAW", "POPPCREL"})
+  else
+   table.insert(code, {"TTCK"})
+  end
+
   table.insert(code, {"RAWLB", labelse .. ":"})
+
+  local iterm3 = input_term
+  if not canrunfalse then iterm3 = 1 end
+
   table.insert(code, {"STCK"})
-  handle_stmt(code, stmt[4], input_term)
-  table.insert(code, {"ETCK"})
+  local term = handle_stmt(code, stmt[4], iterm3)
+  if term ~= 0 then iterm3 = term end
+  if iterm3 == 1 then
+   table.insert(code, {"TTCK"})
+  else
+   table.insert(code, {"ETCK"})
+  end
   table.insert(code, {"RAWLB", labend .. ":"})
+  if (iterm2 == 1) and (iterm3 == 1) then
+   return 1
+  end
   return -1
  end
 

@@ -16,9 +16,6 @@ local astlib = require("ast")
 local create_blank_stack_system = require("output.zpu.stmg")
 local handle_fstmt = require("output.zpu.func")
 
--- By specification, this should be \x04
-local string_terminator = "\x00"
-
 return {["run"] = function(ast, args)
 
  local code_buffer = {}
@@ -81,7 +78,7 @@ return {["run"] = function(ast, args)
   local lockautos = {}
   local externs = {}
   local arrays = {}
-  local body, terminating = handle_fstmt(f[3], f[4], autos2, lockautos, arrays, externs, global_variables, get_unique_label, gen_words, string_terminator)
+  local body, terminating = handle_fstmt(f[3], f[4], autos2, lockautos, arrays, externs, global_variables, get_unique_label, gen_words)
   for k, _ in pairs(externs) do
    if not global_local_externs[k] then
     global_externs[k] = true

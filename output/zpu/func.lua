@@ -42,7 +42,7 @@ local checkpoint_all_compounds = false
 
 --  + more backends (...announce on apr.1st. not happening.)
 
-return function (args, stmt, autos, lockautos, arrays, externs, global_variables, get_unique_label, gen_words, str_term)
+return function (args, stmt, autos, lockautos, arrays, externs, global_variables, get_unique_label, gen_words)
  local astlib = require("ast")
  local likeautos = {}
  for _, v in ipairs(args) do
@@ -310,6 +310,7 @@ return function (args, stmt, autos, lockautos, arrays, externs, global_variables
      error("Assembly tried to avoid returning value when needed @ " .. rv[2][3])
     end
     if rv[3][1][1] ~= "string" then error("Code must be string @ " .. rv[2][3]) end
+    -- Notably, the stack layout is the same - assembly better expect this.
     for i = 2, #rv[3] do
      table.insert(code, {"DPOP"})
     end
@@ -614,10 +615,11 @@ return function (args, stmt, autos, lockautos, arrays, externs, global_variables
   error("Unrecognized PBOP " .. rv[2] .. " @ " .. rv[5])
  end
 
- -- Not sure how to handle this, defer to compiler core
+ -- The string terminator issue is deferred to astlib now.
+ -- That way, specification is broken (using 0 for *e) in a consistent, and thus compatible, manner - and it's changable from one place.
  function valcompilers.string(code, rv, mode, state)
   if mode then modeerror(rv) end
-  local ps = astlib.parse_str(rv[2], astlib.default_escapes, rv[3]) .. str_term
+  local ps = astlib.parse_str(rv[2], astlib.default_escapes, rv[3]) .. astlib.default_escapes["*e"]
   ps = astlib.parse_chars(ps, rv[3], true, false)
   table.insert(code, {"IM", gen_words(ps)})
   table.insert(code, {"DTMP"})

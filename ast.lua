@@ -228,7 +228,8 @@ end
 
 ast.default_escapes = {
  ["*0"] = "\x00",
- ["*e"] = "\x04",
+ --["*e"] = "\x04", -- specification
+ ["*e"] = "\x00", -- compromise between specification ('*e' is used in B example code) and reality (0 is used by everybody nowadays)
  ["*("] = "{",
  ["*)"] = "}",
  ["*t"] = "\t",

@@ -48,7 +48,7 @@
 -- compound, {<statement>, ...}
 -- null, <line>
 
--- If your compiler implements the full Honeywell B set rather than the PDP-11 B set,
+-- If your backend implements the full Honeywell B set rather than the PDP-11 B set,
 --  then you have to handle default: as a special case of label.
 
 -- AST decls

@@ -14,6 +14,10 @@
 -- (It's detected if the return is ignored,
 --   and thus should only be as inefficient as char.)
 
+-- This also can add, if "-H" is the first argument,
+--  half/lhalf for 16-bit value access.
+-- Rather than being base[idx], they are base[idx * 2].
+
 local astlib = require("ast")
 local walker = require("astwalker")
 
@@ -21,11 +25,23 @@ return {["run"] = function (ast, args)
  -- Modify a call to be an assembly routine.
  -- The call's target should be an ID already.
  -- 'doret' determines if the routine returns a value or not.
- local function modify_call(rv, assembly, doret)
+ local function modify_call(rv, assembly, doret, m2)
   rv[2][2] = "__asmnv__"
   if doret then
    rv[2][2] = "__asm__"
   end
+  -- Move the "add" outside (it can be processed equally efficiently by the expression evaluator,
+  --  and allows AST optimization passes to process it.)
+  local add_a = table.remove(rv[3], 1)
+  local add_b = table.remove(rv[3], 1)
+  if m2 then
+   -- Multiply idx by 2.
+   add_b = {"pbop", "*", add_b, {"int", "2", rv[#rv]}, rv[#rv]}
+  end
+  local f = {"pbop", "+", add_a, add_b, rv[#rv]}
+  table.insert(rv[3], 1, f)
+  
+  -- Prepend the assembly.
   table.insert(rv[3], 1, {"string", "\"" .. assembly .. "\"", rv[#rv]})
  end
  local function process_call(rv, doret)
@@ -34,25 +50,46 @@ return {["run"] = function (ast, args)
    if rv[2][2] == "char" then
     if #rv[3] == 2 then
      modify_call(rv,
-      "ADD\n" ..
-      "LOADB\n", true)
+      "LOADB\n", true, false)
     end
    end
    if rv[2][2] == "lchar" then
     if #rv[3] == 3 then
      if doret then
-      -- This has to calculate the address, backup the new value, then store it.
+      -- This has to backup the new value, then store it.
       -- If it wasn't for the inefficiency this entails doret wouldn't exist.
       modify_call(rv,
-       "ADD\n" ..
        "LOADSP 4\n" ..
        "LOADSP 4\n" ..
        "STOREB\n" ..
-       "STORESP 0\n", true)
+       "STORESP 0\n", true, false)
      else
       modify_call(rv,
-       "ADD\n" ..
-       "STOREB\n", false)
+       "STOREB\n", false, false)
+     end
+    end
+   end
+   if args[1] == "-H" then
+    if rv[2][2] == "half" then
+     if #rv[3] == 2 then
+      modify_call(rv,
+       "LOADH\n", true, true)
+     end
+    end
+    if rv[2][2] == "lhalf" then
+     if #rv[3] == 3 then
+      if doret then
+       -- This has to backup the new value, then store it.
+       -- If it wasn't for the inefficiency this entails doret wouldn't exist.
+       modify_call(rv,
+        "LOADSP 4\n" ..
+        "LOADSP 4\n" ..
+        "STOREH\n" ..
+        "STORESP 0\n", true, true)
+      else
+       modify_call(rv,
+        "STOREH\n", false, true)
+      end
      end
     end
    end

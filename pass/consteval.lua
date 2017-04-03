@@ -17,7 +17,21 @@ return {["run"] = function (ast, args)
  local p = 1
 
  -- -D: Define. Ex. -DHELLO 1
- -- -C: Condense. Ex. -C
+ -- -C: Condense. Ex. -C. This turns character constants into their respective integers pre-emptively, so that they be processed.
+ --
+ --     Notes on when it's acceptable to use this:
+ --
+ --        On a machine with 32-bit/24-bit/16-bit/8-bit words, 8-bit characters, and no special character translation.
+ --        You can use '-B' to specify big-endian (it's little-endian as a default).
+ --        Notably, the characters are always "right-adjusted":
+ --        On a big-endian machine,    'AB' is 0x4142.
+ --        On a little-endian machine, 'AB' is 0x4241.
+ --        (This is why it's safe to use on a < 32-bit machine, and also makes sure the values are sane for single characters.)
+ --
+ --     Example: 
+ --     Using SHIFT-JIS on ZPU is fine, so long as any translation to SHIFT-JIS is done before consteval.
+ --     Otherwise, the condensed integers will still be in the pre-translation format.
+ --
  -- -B: Big-endian (used by Condense). Ex. -C -B
  -- -I: Index multiply by WORD_VALS. Ex. -DWORD_VALS 4 -I
  --     This is a compatibility setting,
@@ -108,7 +122,7 @@ return {["run"] = function (ast, args)
      return v
     end
     if rv[2] == "%" then
-     return lhs / rhs
+     return lhs % rhs
     end
    end
   end

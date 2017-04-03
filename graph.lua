@@ -27,12 +27,27 @@ end
 
 local ti = 0
 local mapping = {}
+local function dotString(txn)
+ local tx = tostring(txn)
+ local built = ""
+ for i = 1, tx:len() do
+  local ch = tx:sub(i, i)
+  if ch == "\n" then
+   ch = "\\n"
+  end
+  if ch == "\"" then
+   ch = "\\\""
+  end
+  built = built .. ch
+ end
+ return "\"" .. built .. "\""
+end
 local function handle(par, tx)
  local nid = ti
- print("\"" .. nid .. "\" [label=\"" .. tx .. "\"];")
+ print("" .. dotString(nid) .. " [label=" .. dotString(tx) .. "];")
  ti = ti + 1
  if par then
-  print(" \"" .. par .. "\" -> \"" .. nid .. "\";")
+  print(" " .. dotString(par) .. " -> " .. dotString(nid) .. ";")
  end
  return nid
 end

@@ -249,13 +249,13 @@ return function (args, stmt, autos, lockautos, arrays, externs, global_variables
   end
   if mode == "set" then
    -- set w/getset is handled above.
+   table.insert(code, {"DPOP"})
+   table.insert(code, {"DPOP"})
    table.insert(code, {"RAW", "STORE"})
-   table.insert(code, {"DPOP"})
-   table.insert(code, {"DPOP"})
    return
   end
   if mode then modeerror(rv) end
-  -- it's known that TOS is a "useless temp." anyway
+  -- It's known that TOS is a useless temp (see DPOP DPOP ADD DTMP)
   table.insert(code, {"RAW", "LOAD"})
  end
 
@@ -601,6 +601,7 @@ return function (args, stmt, autos, lockautos, arrays, externs, global_variables
     table.insert(code, {"DTMP"})
     local bk = {}
     if not state then
+     table.insert(code, {"RAW", "// for " .. rv[2]})
      table.insert(code, {"RAW", "LOADSP 0"})
      table.insert(code, {"HOLD", bk})
      table.insert(code, {"DTMP"})

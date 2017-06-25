@@ -1,3 +1,6 @@
+// I, 20kdc, release this file into the public domain.
+// No warranty is provided, implied or otherwise.
+
 main() {
  extrn inbyte, outbyte, putn;
  auto a, n;

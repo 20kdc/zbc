@@ -41,7 +41,7 @@ return {["run"] = function (ast, args)
  while p < #args do
   local arg = args[p]
   if arg:sub(1, 2) == "-D" then
-   defines[arg:sub(2)] = astlib.parse_int(args[p + 1])
+   defines[arg:sub(3)] = astlib.parse_int(args[p + 1])
    p = p + 2
   else
    if arg:sub(1, 2) == "-C" then
@@ -138,7 +138,7 @@ return {["run"] = function (ast, args)
    if #rv[3] ~= 1 then error("Multiple indices with -I @ " .. rv[4]) end
    -- Do this *before* constantization
    local o = rv[3][1]
-   rv[3][1] = {"pbop", "*", o, {"int", "4", o[#o]}, o[#o]}
+   rv[3][1] = {"pbop", "*", o, {"int", tostring(defines.WORD_VALS), o[#o]}, o[#o]}
   end
   walker.walk_rvalue(rv, handle_rvalue)
   local r = try_calc(rv)
@@ -158,6 +158,59 @@ return {["run"] = function (ast, args)
     rv[3] = {"int", tostring(-r), line}
     rv[4] = false
     rv[5] = line
+   end
+  else
+   -- Tiny optimization check - check for "[0]".
+   -- Note that constantization would remove any "0 * 4" stuff.
+   if rv[1] == "index" then
+    if #rv[3] == 1 then
+     if rv[3][1][1] == "int" then
+      if rv[3][1][2] == "0" then
+       local line = rv[4]
+       local base = rv[2]
+       for k, v in pairs(rv) do
+        rv[k] = nil
+       end
+       rv[1] = "puop"
+       rv[2] = "*"
+       rv[3] = base
+       rv[4] = false
+       rv[5] = line
+      end
+     end
+    end
+   end
+   if rv[1] == "pbop" then
+    if rv[2] == "+" then
+     if rv[3][1] == "int" then
+      if rv[3][2] == "0" then
+       -- overwrite with the inner piece
+       local line = rv[5]
+       local base = rv[4]
+       for k, v in pairs(rv) do
+        rv[k] = nil
+       end
+       for k, v in pairs(base) do
+        rv[k] = v
+       end
+      end
+     end
+    end
+    if (rv[2] == "-") or (rv[2] == "+") then
+     if rv[4][1] == "int" then
+      if rv[4][2] == "0" then
+       -- overwrite with the inner piece
+       local line = rv[5]
+       local base = rv[3]
+       for k, v in pairs(rv) do
+        rv[k] = nil
+       end
+       for k, v in pairs(base) do
+        rv[k] = v
+       end
+      end
+     end
+    end
    end
   end
  end

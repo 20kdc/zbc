@@ -158,7 +158,7 @@ return {["run"] = function(ast, args)
  local function spit_ivals(ic, il)
   for i = 1, ic do
    local v = il[i]
-   local vi = ""
+   local vi = "0x00000000"
    if v then
     if v[1] ~= "id" then
      if v[1] ~= "int" then

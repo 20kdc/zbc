@@ -286,13 +286,24 @@ return function (args, stmt, autos, lockautos, arrays, externs, global_variables
    table.insert(argholds, h)
   end
   if not call_id then
+   -- for afterwards
+   local gul = get_unique_label()
+   local rethold = {}
    local finalhold = {}
+   table.insert(code, {"IM", gul})
+   table.insert(code, {"DTMP"})
+   table.insert(code, {"HOLD", rethold})
    handle_rval(code, rv[2])
    table.insert(code, {"HOLD", finalhold})
+   table.insert(argholds, rethold)
    table.insert(argholds, finalhold)
    -- dump everything in the right place on stack
    table.insert(code, argholds)
-   table.insert(code, {"RAW", "CALL"})
+   -- "CALL" does not exist, only CALLPCREL. :(
+   table.insert(code, {"DPOP"})
+   table.insert(code, {"DPOP"})
+   table.insert(code, {"RAW", "POPPC"})
+   table.insert(code, {"RAWLB", gul .. ":"})
   else
    -- if it's an ID, risk setting everything up beforehand
    --  then putting the call address on top and re-sanity-checking,
@@ -335,20 +346,27 @@ return function (args, stmt, autos, lockautos, arrays, externs, global_variables
    if not can_relpc then
     -- Handle the value, hold it, put it at the TOS of the absolute final RELE,
     --  and then actually run the call.
-    handle_rval(code, rv[2])
 
     local finalhold = {}
+    local rethold = {}
+    local gul = get_unique_label()
+    table.insert(code, {"IM", gul})
+    table.insert(code, {"DTMP"})
+    table.insert(code, {"HOLD", rethold})
+    handle_rval(code, rv[2])
     table.insert(code, {"HOLD", finalhold})
-
-    -- put call addr. on TOS
+        -- put call addr. on TOS
     local argholds2 = {}
     for k, v in ipairs(argholds) do argholds2[k] = v end
+    table.insert(argholds2, rethold)
     table.insert(argholds2, finalhold)
     -- RELE
     table.insert(code, argholds2)
     -- actually run the call
     table.insert(code, {"DPOP"})
-    table.insert(code, {"RAW", "CALL"})
+    table.insert(code, {"DPOP"})
+    table.insert(code, {"RAW", "POPPC"})
+    table.insert(code, {"RAWLB", gul .. ":"})
    else
     -- absolutely 100% sure this is can be IMRELPC'd so completely avoid stack management
     table.insert(code, {"IMPCREL", rv[2][2]})
@@ -987,7 +1005,7 @@ return function (args, stmt, autos, lockautos, arrays, externs, global_variables
 
  for k, v in pairs(declared_labels_need_resolution) do
   if v then
-   error("Label " .. k .. " went undeclared.")
+   error("Label " .. k .. " went undeclared in function @ " .. stmt[#stmt])
   end
  end
 

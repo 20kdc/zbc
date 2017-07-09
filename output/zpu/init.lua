@@ -43,6 +43,7 @@ return {["run"] = function(ast, args)
  local global_flist = {}
  local data_footer = {}
 
+ print(".extern _memreg")
  for k, v in ipairs(ast) do
   if v[1] == "vardef" then
    print(".globl " .. v[2])
